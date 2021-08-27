@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define min(a,b) ((a) < (b) ? (a) : (b))
@@ -226,7 +228,7 @@ void count_gen (int level) {
 	}
 }
 
-inline void set (int curr_generator, int t) {
+void inline set_gen (int curr_generator, int t) {
 	int i;
 
 	b_free += -2*t+1;
@@ -266,7 +268,7 @@ void run (int level, int min_level) {
 		d[curr_generator + 1] = 0;
 		d[curr_generator]++;
 		d[curr_generator + 2]++;
-		set(curr_generator, 1);
+		set_gen(curr_generator, 1);
 	}
 
 	was_alarm = 0;
@@ -306,7 +308,7 @@ void run (int level, int min_level) {
 			d[curr_generator + 1] = 0;
 			d[curr_generator]++;
 			d[curr_generator + 2]++;
-			set(curr_generator, 1);
+			set_gen(curr_generator, 1);
 			level++;
 			stats[level].rearrangement = direct > 0 ? 1 : 2;
 			stats[level].rearr_index = -1;
@@ -344,7 +346,7 @@ void run (int level, int min_level) {
 		else {
 			curr_generator = stats[level].generator;
 			level--;
-			set(curr_generator, 0);
+			set_gen(curr_generator, 0);
 			d[curr_generator]--;
 			d[curr_generator + 2]--;
 			d[curr_generator + 1] = stats[level + 1].stack;
@@ -712,7 +714,7 @@ void do_worker(int id, const char *dump_filename) {
 		}
 
 		for (i = k; i--; ) {
-			set(2*i, 1);
+			set_gen(2*i, 1);
 		}
 
 		trace("%s Run, level = %d, minlevel = %d\n", NODE_NAME, message.level, message.min_level);
