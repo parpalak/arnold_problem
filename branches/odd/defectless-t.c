@@ -5,7 +5,7 @@
 #include <signal.h>
 
 // May vary
-#define n1 39
+#define n1 49
 #define n_step1 (n1*(n1-1) / 2)
 
 // #define DEBUG 1
@@ -181,7 +181,9 @@ void inline do_uncross(int level, int generator) {
 
 // int inline should_process(int cur_gen, int prev_gen) {
 
-//     int k = cur_gen < n - 3 && cur_gen <= prev_gen + 20;
+//     int k = cur_gen < n - 3 
+//     // && cur_gen <= prev_gen + 20
+//     ;
 
 //     return k;
 // }
@@ -205,7 +207,7 @@ void inline do_uncross(int level, int generator) {
 // }
 
 // int inline init_skip_gen(int curr_generator) {
-//     return curr_generator + 2; // todo
+//     return n - 3; // todo
 // }
 
 // Стратегия перебора -2, n-3, n-5 ...
@@ -258,33 +260,12 @@ int inline init_skip_gen(int curr_generator) {
     return curr_generator + 2;
 }
 
-// //Стратегия перебора от большего к меньшему
-// int inline should_process(int cur_gen, int prev_gen) {
-//     return cur_gen > prev_gen - 2 && cur_gen > 0 ;
-// }
-
-// void inline modify_generator(int* cur_gen, int prev_gen) {
-//     *cur_gen -= 2;
-//     if (*cur_gen == prev_gen) {
-//         *cur_gen -= 2;
-//     }
-// }
-
-// int inline init_working_gen(int generator) {
-//     return n - 1;
-// }
-
-// int inline init_skip_gen(int curr_generator) {
-//     return 0;
-// }
-
 // Calculations for defectless configurations
-void calc() {
-    int curr_generator, start_level;
+double calc_deep(int iterations_limit, int start_gen_num, int start_gens[]) {
     //    int level = 0;
 
     max_s = 0;
-
+    level = 0;
 
     for (int i = n + 1; i--; ) {
         d[i] = 2;
@@ -296,12 +277,54 @@ void calc() {
         level++;
     }
 
-    max_level = start_level = level;
+    int curr_generator = n-5;
 
-    stat[level].generator = init_working_gen(n-5); // завышенное несуществующее значение, будет уменьшаться
-    stat[level].var = 0;
+    for (int i = 0; i < start_gen_num; i++) {
+        // printf("-->> start lev = %d gen = %d\n", level, start_gens[i]);
 
-    while (1) {
+        curr_generator = start_gens[i];
+        if (curr_generator != 0) {
+            if (a[curr_generator - 1] > a[curr_generator + 1]) {
+                return 0;
+            }
+
+            if (a[curr_generator] > a[curr_generator + 2]) {
+                return 0;
+            }
+
+            if (a[curr_generator] > a[curr_generator + 1]) {
+                return 0;
+            }
+        }
+        else {
+            // Нулевой генератор может пересечь только первую и последнюю прямые
+            if (a[curr_generator + 1] != n - 1) {
+                return 0;
+            }
+            if (a[curr_generator] != 0) {
+                return 0;
+            }
+        }
+
+
+        do_cross(level, stat[level].generator = start_gens[i]);
+        level++;
+        do_cross(level, stat[level].generator = start_gens[i]-1);
+        level++;
+        do_cross(level, stat[level].generator = start_gens[i]+1);
+        level++;
+
+        stat[level].var = start_gens[i];
+    }
+
+    int start_level = level;
+    double max_level = level;
+
+    stat[level].generator = init_working_gen(curr_generator); // завышенное несуществующее значение, будет уменьшаться
+    // stat[level].var = 0;
+
+    int i = iterations_limit;
+    while (i > 0) {
 #ifdef DEBUG 
         printf("-->> start lev = %d gen = %d\n", level, stat[level].generator);
 #endif
@@ -339,24 +362,6 @@ void calc() {
                 }
             }
 
-            // Optimization
-            // Запрещаем белые треугольники и квадраты (хотя треугольники запрещены автопостроением черных треугольников)
-            // if (d[curr_generator + 1] < 3) {
-            //     // printf("no-white-squares\n");
-            //     continue;
-            // }
-
-            // Запрещаем появление былых многоугольников больше 7 (=5+2)
-            // if (d[curr_generator - 1] > 5) {
-            //     continue;
-            // }
-            // if (curr_generator < n - 3 && d[curr_generator + 1] > 5) {
-            //     continue;
-            // }
-            // if (curr_generator < n - 3 && d[curr_generator + 3] > 5) {
-            //     continue;
-            // }
-
             do_cross(level, curr_generator);
             level++;
             // stat[level].var = curr_generator;
@@ -389,6 +394,8 @@ void calc() {
         else {
             if (max_level < level) {
                 max_level = level;
+            } else if (max_level < level + 1) {
+                max_level += 0.00001;
             }
             if (level <= start_level) {
                 printf("level <= start_level\n");
@@ -415,7 +422,10 @@ void calc() {
             // #endif
             do_uncross(level, stat[level].generator);
         }
+        i--;
     }
+
+    return max_level;
 }
 
 int main(int argc, char** argv) {
@@ -453,12 +463,47 @@ int main(int argc, char** argv) {
 
     b_free = n * (n - 1) / 2;
 
-    for (i = 0; i < n; i++) {
-        a[i] = i;
+    int gens [n_step1];
+
+    for (int j=0; j < 100; j++) {
+        int optimal_gen = n-3;
+        double max_res = 0;
+        for (i = n-3; i >= 0; i-=2) {
+            if (j > 0 && (gens[j-1] == i 
+                // || gens[j-1] - 2 > i
+            )) {
+                continue;
+            }
+            gens[j] = i;
+
+            gettimeofday(&start, NULL);
+            for (int k = 0; k < n; k++) {
+                a[k] = k;
+            }
+
+            double res = calc_deep(13000000, j+1, gens);
+
+            if (res >= max_res) {
+                max_res = res;
+                optimal_gen = i;
+            }
+            // for (int h = 0; h < j+1; h++) {
+            //     printf("%d ", gens[h]);
+            // }
+            // printf("[%f]\n", b_free - res);
+        }
+
+        gens[j] = optimal_gen;
+
+        for (int h = 0; h < j+1; h++) {
+            printf("%d ", gens[h]);
+        }
+        printf("%f\n", b_free - max_res);
+        if (b_free - max_res <= 0) {
+            break;
+        }
     }
 
-    gettimeofday(&start, NULL);
-    calc();
 
     printf("---------->>> Process terminated.\n");
 

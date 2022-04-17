@@ -5,7 +5,7 @@
 #include <signal.h>
 
 // May vary
-#define n1 49
+#define n1 67
 #define n_step1 (n1*(n1-1) / 2)
 
 // #define DEBUG 1
@@ -407,7 +407,7 @@ int main(int argc, char** argv) {
     char s[80];
 
     if (argc <= 1) {
-        printf("Usage: %s -n N [-o filename]\n  -n\n	 line count;\n  -o\n	 output file.\n", s, argv[0]);
+        printf("Usage: %s -n N [-o filename]\n  -n\n	 line count;\n  -o\n	 output file.\n", argv[0]);
 
         return 0;
     }
