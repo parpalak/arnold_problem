@@ -1,3 +1,12 @@
+/**
+ * Программа осуществляет перебор начальных генераторов и ограниченный обход дерева.
+ * Отбираются те генераторы, для которых удалось спуститься на самый глубокий уровень.
+ * 
+ * Применяется оптимизация для нечетного количества прямых, зафиксирована раскраска, начальные генераторы.
+ * Черные области могут быть только треугольниками, так как черные генераторы применяются сразу после белых
+ * и тем самым не перебираются.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -271,13 +280,14 @@ double calc_deep(int iterations_limit, int start_gen_num, int start_gens[]) {
         d[i] = 2;
     }
 
+    // Часть оптимизации. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
     for (int i = n / 2; i--; ) {
         stat[level].generator = i * 2 + 1;
         do_cross(level, i * 2 + 1);
         level++;
     }
 
-    int curr_generator = n-5;
+    int curr_generator = n-5; // todo убрать, похоже не нужно
 
     for (int i = 0; i < start_gen_num; i++) {
         // printf("-->> start lev = %d gen = %d\n", level, start_gens[i]);
@@ -293,6 +303,16 @@ double calc_deep(int iterations_limit, int start_gen_num, int start_gens[]) {
             }
 
             if (a[curr_generator] > a[curr_generator + 1]) {
+                return 0;
+            }
+
+            // Оптимизация 2.
+            if (a[curr_generator] + 1 == a[curr_generator + 2] && curr_generator + 1 + a[curr_generator + 2] !=  n-1) {
+                return 0;
+            }
+
+            // Оптимизация 2.
+            if (a[curr_generator - 1] + 1 == a[curr_generator + 1] && curr_generator - 1 + a[curr_generator + 1] !=  n-1) {
                 return 0;
             }
         }
@@ -338,30 +358,69 @@ double calc_deep(int iterations_limit, int start_gen_num, int start_gens[]) {
             printf("test lev = %d gen = %d prev = %d b_free = %d\n", level, curr_generator, stat[level].var, b_free);
 #endif
 
+            /**
+             * Оптимизации.
+             * 
+             * 1. Генератор должен пересекать только прямые, которые еще не пересекались.
+             * Прямые пересекались, если левая прямая имеет больший номер, чем правая.
+             * 
+             * 2. Последние генераторы должны образовать (n-1)/2 внешних черных двуугольников.
+             * Стороны двуугольников - прямые с убывающими номерами.
+             * Эта оптимизация - продолжение фиксации начальных генераторов. Применима только для черных генераторов.
+             * Например, прямые 0 и 1 могут пересекаться только последним генератором n - 2 в самом конце.
+             * В середине их нельзя пересекать. Тут проверяем хотя бы совпадение генератора и прямых.
+             * Пока непонятно, как проверить, что это именно последний генератор.
+             * 
+             * 3. Черные генераторы исключаются из перебора.
+             * Сразу после применения любого белого генератора применяются два соседних черных генератора
+             * (для белого генератора 0 только один соседний правый генератор 1).
+             * 
+             * 4. Генератор 0 применяется только один раз для первой и последней прямой.
+             * Он образует оставшийся внешний черный двуугольник, образованный прямыми 0 и n-1.
+             */
 
             if (curr_generator != 0) {
+                // Оптимизация 1 и 3.
                 if (a[curr_generator - 1] > a[curr_generator + 1]) {
                     continue;
                 }
 
+                // Оптимизация 1 и 3.
                 if (a[curr_generator] > a[curr_generator + 2]) {
                     continue;
                 }
 
+                // Оптимизация 2.
+                if (a[curr_generator] + 1 == a[curr_generator + 2] && curr_generator + 1 + a[curr_generator + 2] !=  n-1) {
+                    continue;
+                }
+
+                // Оптимизация 1.
                 if (a[curr_generator] > a[curr_generator + 1]) {
+                    continue;
+                }
+
+                // Оптимизация 2.
+                if (a[curr_generator - 1] + 1 == a[curr_generator + 1] && curr_generator - 1 + a[curr_generator + 1] !=  n-1) {
                     continue;
                 }
             }
             else {
-                // Нулевой генератор может пересечь только первую и последнюю прямые
+                // Оптимизация 4.
                 if (a[curr_generator + 1] != n - 1) {
                     continue;
                 }
                 if (a[curr_generator] != 0) {
                     continue;
                 }
+                // Здесь нет смысла проверять оптимизацию 2, так как прямая с номером 1 уже пересекла прямую n-1 и прямую 2.
+                // Поэтому a[2] != 1, и пересечение a[1] == 0 и a[2] всегда возможно.
             }
 
+            // if (a[0] != n-1 && a[n-1] != n-1 && a[curr_generator + 1] != n-1) {
+            //     continue;
+            // }
+            
             do_cross(level, curr_generator);
             level++;
             // stat[level].var = curr_generator;
@@ -456,7 +515,7 @@ int main(int argc, char** argv) {
     }
 
     if (n % 2 == 0) {
-        printf("This program is designed for fast search of odd defectless configurations only.");
+        printf("This program is designed for fast search of odd defectless configurations only.\n");
 
         return 0;
     }
@@ -481,7 +540,7 @@ int main(int argc, char** argv) {
                 a[k] = k;
             }
 
-            double res = calc_deep(13000000, j+1, gens);
+            double res = calc_deep(4000000, j+1, gens);
 
             if (res >= max_res) {
                 max_res = res;
