@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/time.h>
 #include <signal.h>
 
@@ -18,23 +19,23 @@
 
 // #define DEBUG 1
 
-int n;
+unsigned int n;
 
-int level = 0;
-int max_level;
+unsigned int level = 0;
+unsigned int max_level;
 
 typedef struct {
-    int generator;
-    int prev_polygon_cnt;
-    int var;
+    int_fast8_t generator;
+//    int_fast8_t prev_polygon_cnt;
+    int_fast8_t var; // предыдущий белый генератор, -3 или -2 для генератора 0
 } Stat;
 
 Stat stat[n_step1 + 1];
 
-int a[n1]; // Текущая перестановка 
-int d[n1 + 1]; // Количество боковых вершин в текущих многоугольниках вокруг прямых
+int_fast8_t a[n1]; // Текущая перестановка 
+unsigned int d[n1 + 1]; // Количество боковых вершин в текущих многоугольниках вокруг прямых
 
-int b_free; // Количество оставшихся генераторов для подбора
+unsigned int b_free; // Количество оставшихся генераторов для подбора
 int max_s = 0;
 
 // User input
@@ -147,7 +148,7 @@ void count_gen(int level) {
  *
  * @return  void
  */
-void inline set(int generator, int cross_direction) {
+void inline set(unsigned int generator, unsigned int cross_direction) {
     int i;
 
     //    b_free += -2 * cross_direction + 1; // Корректируем кол-во оставшихся генераторов
@@ -157,22 +158,22 @@ void inline set(int generator, int cross_direction) {
     a[generator + 1] = i;
 }
 
-void inline do_cross(int level, int generator) {
+void inline do_cross(unsigned int level, unsigned int generator) {
 
 #ifdef DEBUG
     printf("cross lev = %d gen = %d\n", level, generator);
 #endif
 
-    stat[level + 1].prev_polygon_cnt = d[generator + 1];
+//    stat[level + 1].prev_polygon_cnt = d[generator + 1];
 
-    d[generator + 1] = 0;
-    d[generator]++;
-    d[generator + 2]++;
+    // d[generator + 1] = 0;
+    // d[generator]++;
+    // d[generator + 2]++;
 
     set(generator, 1);
 }
 
-void inline do_uncross(int level, int generator) {
+void inline do_uncross(unsigned int level, unsigned int generator) {
 
 #ifdef DEBUG
     printf("un-cross lev = %d gen = %d\n", level, generator);
@@ -180,9 +181,9 @@ void inline do_uncross(int level, int generator) {
 
     set(generator, 0);
 
-    d[generator]--;
-    d[generator + 2]--;
-    d[generator + 1] = stat[level + 1].prev_polygon_cnt;
+    // d[generator]--;
+    // d[generator + 2]--;
+    // d[generator + 1] = stat[level + 1].prev_polygon_cnt;
 }
 
 // // Стратегия перебора -2, +2, +4 ...
@@ -217,7 +218,7 @@ void inline do_uncross(int level, int generator) {
 // }
 
 // Стратегия перебора -2, n-3, n-5 ...
-int inline should_process(int cur_gen, int prev_gen) {
+unsigned int inline should_process(int_fast8_t cur_gen, int_fast8_t prev_gen) {
     // Пример: если предыдущий генератор 2, заканчивать надо на 4
 
     if (cur_gen == prev_gen + 2) {
@@ -225,7 +226,7 @@ int inline should_process(int cur_gen, int prev_gen) {
     }
 
     if (
-            cur_gen != prev_gen 
+        cur_gen != prev_gen 
     ) {
         return 1;
     }
@@ -242,10 +243,10 @@ int inline should_process(int cur_gen, int prev_gen) {
     return 0;
 }
 
-void inline modify_generator(int* cur_gen, int prev_gen) {
+void inline modify_generator(int_fast8_t* cur_gen, int_fast8_t prev_gen) {
     // Пример: предыдущий генератор 2. Начинаем с 2, сразу вычитаем, получаем 0
     // Следующим шагом инкрементим до максимума и вычитаем.
-    if (*cur_gen == -100) {
+    if (*cur_gen == 100) {
         *cur_gen =  (prev_gen > 0) ? prev_gen - 2 : n - 3;
         return ;
     }
@@ -258,11 +259,11 @@ void inline modify_generator(int* cur_gen, int prev_gen) {
     *cur_gen -= 2;
 }
 
-int inline init_working_gen(int generator) {
-    return -100;
+int_fast8_t inline init_working_gen(int_fast8_t generator) {
+    return 100;
 }
 
-int inline init_skip_gen(int curr_generator) {
+int_fast8_t inline init_skip_gen(int_fast8_t curr_generator) {
     return curr_generator + 2;
 }
 
@@ -288,7 +289,8 @@ int inline init_skip_gen(int curr_generator) {
 
 // Calculations for defectless configurations
 void calc() {
-    int curr_generator, start_level;
+    unsigned int curr_generator;
+    unsigned int start_level;
     //    int level = 0;
 
     max_s = 0;
@@ -441,7 +443,7 @@ void calc() {
 #ifdef DEBUG 
                 printf("count-gen\n");
 #endif
-
+                // goto up;
                 stat[level].generator = init_skip_gen(curr_generator); // перебора не будет, чтобы вернуться
             }
             else {
@@ -449,6 +451,7 @@ void calc() {
             }
         }
         else {
+            up:
             if (max_level < level) {
                 max_level = level;
             }
