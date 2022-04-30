@@ -22,18 +22,16 @@
 unsigned int n;
 
 unsigned int level = 0;
-unsigned int max_level;
+
+typedef uint_fast32_t line_num;
 
 typedef struct {
-    int_fast8_t generator;
-//    int_fast8_t prev_polygon_cnt;
-    int_fast8_t var; // предыдущий белый генератор, -3 или -2 для генератора 0
+    line_num generator;
 } Stat;
 
 Stat stat[n_step1 + 1];
 
-int_fast8_t a[n1]; // Текущая перестановка 
-unsigned int d[n1 + 1]; // Количество боковых вершин в текущих многоугольниках вокруг прямых
+line_num a[n1]; // Текущая перестановка 
 
 unsigned int b_free; // Количество оставшихся генераторов для подбора
 int max_s = 0;
@@ -53,7 +51,7 @@ void handle_signal(int sig) {
     double time_taken = end.tv_sec + end.tv_usec / 1e6 -
         start.tv_sec - start.tv_usec / 1e6; // in seconds
 
-    printf("\n [%f] level = %d/%d/%d", time_taken, level, max_level, b_free);
+    printf("\n [%f] level = %d/%d", time_taken, level, b_free);
     printf("\n%d\n", stat[n/2].generator);
 
     exit(0);
@@ -103,8 +101,19 @@ void count_gen(int level) {
 
     if (strcmp(filename, "") == 0) {
         printf(" %f A=%d %d)", time_taken, s, max_defects1);
+
+        for (i = n / 2; i--; ) {
+            printf(" %d", i * 2 + 1);
+        }
+
         for (i = 0; i < level; i++) {
             printf(" %d", stat[i].generator);
+            if (stat[i].generator == 0) {
+                printf(" 1");
+            }
+            else if (stat[i].generator % 2 == 0) {
+                printf(" %d %d", stat[i].generator - 1, stat[i].generator + 1);
+            }
         }
 
         printf("\n");
@@ -148,42 +157,14 @@ void count_gen(int level) {
  *
  * @return  void
  */
-void inline set(unsigned int generator, unsigned int cross_direction) {
-    int i;
+void set(unsigned int generator, unsigned int cross_direction) {
+    line_num i;
 
-    //    b_free += -2 * cross_direction + 1; // Корректируем кол-во оставшихся генераторов
+    b_free += -2 * cross_direction + 1; // Корректируем кол-во оставшихся генераторов
 
     i = a[generator];
     a[generator] = a[generator + 1];
     a[generator + 1] = i;
-}
-
-void inline do_cross(unsigned int level, unsigned int generator) {
-
-#ifdef DEBUG
-    printf("cross lev = %d gen = %d\n", level, generator);
-#endif
-
-//    stat[level + 1].prev_polygon_cnt = d[generator + 1];
-
-    // d[generator + 1] = 0;
-    // d[generator]++;
-    // d[generator + 2]++;
-
-    set(generator, 1);
-}
-
-void inline do_uncross(unsigned int level, unsigned int generator) {
-
-#ifdef DEBUG
-    printf("un-cross lev = %d gen = %d\n", level, generator);
-#endif
-
-    set(generator, 0);
-
-    // d[generator]--;
-    // d[generator + 2]--;
-    // d[generator + 1] = stat[level + 1].prev_polygon_cnt;
 }
 
 // // Стратегия перебора -2, +2, +4 ...
@@ -218,52 +199,38 @@ void inline do_uncross(unsigned int level, unsigned int generator) {
 // }
 
 // Стратегия перебора -2, n-3, n-5 ...
-unsigned int inline should_process(int_fast8_t cur_gen, int_fast8_t prev_gen) {
+unsigned int inline should_process(line_num *cur_gen, line_num prev_gen) {
     // Пример: если предыдущий генератор 2, заканчивать надо на 4
 
-    if (cur_gen == prev_gen + 2) {
+    if (*cur_gen == INT_FAST8_MAX) {
+        // С помощью условия пропускаем значение -2.
+        *cur_gen = (prev_gen > 0) ? prev_gen - 2 : n - 3;
+
+        return 1;
+    }
+
+    if (*cur_gen + 2 == prev_gen) {
+        if (n - 3 <= prev_gen) {
+            // Предотвращаем зацикливание. Когда prev_gen на максимуме и равен n-3, переключать на n-3 нельзя
+            return 0;
+        }
+        *cur_gen =  n - 3;
+        return 1;
+    }
+
+    if (*cur_gen == prev_gen + 2) {
         return 0;
     }
 
-    if (
-        cur_gen != prev_gen 
-    ) {
-        return 1;
-    }
-
-    if (
-        prev_gen + 3 != n 
-    ) {
-        // Не понимаю, зачем это надо. Возможно, предыдущее условие наступает как раз, только если prev_gen + 3 == n. Поэтому возможна избыточность
-        return 1;
-    }
-
-    // printf("->>>>>>>>>>>>>>> desicion = %d, cur_gen = %d prev_gen = %d\n", k, cur_gen, prev_gen);
-
-    return 0;
-}
-
-void inline modify_generator(int_fast8_t* cur_gen, int_fast8_t prev_gen) {
-    // Пример: предыдущий генератор 2. Начинаем с 2, сразу вычитаем, получаем 0
-    // Следующим шагом инкрементим до максимума и вычитаем.
-    if (*cur_gen == 100) {
-        *cur_gen =  (prev_gen > 0) ? prev_gen - 2 : n - 3;
-        return ;
-    }
-
-    if (*cur_gen == prev_gen - 2) {
-        *cur_gen =  n - 3;
-        return;
-    }
-
     *cur_gen -= 2;
+    return 1;
 }
 
-int_fast8_t inline init_working_gen(int_fast8_t generator) {
-    return 100;
+line_num inline init_working_gen(line_num generator) {
+    return INT_FAST8_MAX;
 }
 
-int_fast8_t inline init_skip_gen(int_fast8_t curr_generator) {
+line_num inline init_skip_gen(line_num curr_generator) {
     return curr_generator + 2;
 }
 
@@ -289,41 +256,26 @@ int_fast8_t inline init_skip_gen(int_fast8_t curr_generator) {
 
 // Calculations for defectless configurations
 void calc() {
-    unsigned int curr_generator;
-    unsigned int start_level;
-    //    int level = 0;
-
     max_s = 0;
-
-
-    for (int i = n + 1; i--; ) {
-        d[i] = 2;
-    }
 
     // Часть оптимизации. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
     for (int i = n / 2; i--; ) {
-        stat[level].generator = i * 2 + 1;
-        do_cross(level, i * 2 + 1);
-        level++;
+        set(i * 2 + 1, 1);
     }
 
-    max_level = start_level = level;
-
     stat[level].generator = init_working_gen(n-5); // завышенное несуществующее значение, будет уменьшаться
-    stat[level].var = 0;
 
     while (1) {
 #ifdef DEBUG 
         printf("-->> start lev = %d gen = %d\n", level, stat[level].generator);
 #endif
 
-        if (should_process(stat[level].generator, stat[level].var)) {
-            modify_generator(&stat[level].generator, stat[level].var);
+        if (should_process(&stat[level].generator, level > 0 ? stat[level-1].generator : 0)) {
 
-            curr_generator = stat[level].generator;
+            unsigned int curr_generator = stat[level].generator;
 
 #ifdef DEBUG 
-            printf("test lev = %d gen = %d prev = %d b_free = %d\n", level, curr_generator, stat[level].var, b_free);
+            printf("test lev = %d gen = %d prev = %d b_free = %d\n", level, curr_generator, stat[level-1].generator, b_free);
 #endif
 
             /**
@@ -402,42 +354,15 @@ void calc() {
             //     continue;
             // }
 
-
-            // Optimization
-            // Запрещаем белые треугольники и квадраты (хотя треугольники запрещены автопостроением черных треугольников)
-            // if (d[curr_generator + 1] < 3) {
-            //     // printf("no-white-squares\n");
-            //     continue;
-            // }
-
-            // Запрещаем появление былых многоугольников больше 7 (=5+2)
-            // if (d[curr_generator - 1] > 5) {
-            //     continue;
-            // }
-            // if (curr_generator < n - 3 && d[curr_generator + 1] > 5) {
-            //     continue;
-            // }
-            // if (curr_generator < n - 3 && d[curr_generator + 3] > 5) {
-            //     continue;
-            // }
-
-            do_cross(level, curr_generator);
-            level++;
-            // stat[level].var = curr_generator;
-
+            set(curr_generator, 1);
             if (curr_generator != 0) {
-                stat[level].generator = curr_generator - 1;
-                do_cross(level, curr_generator - 1);
-                level++;
-                // stat[level].var = curr_generator;
+                set(curr_generator - 1, 1);
             }
+            set(curr_generator + 1, 1);
 
-            stat[level].generator = curr_generator + 1;
-            do_cross(level, curr_generator + 1);
             level++;
-            stat[level].var = curr_generator;
 
-            if (level == b_free) {
+            if (!b_free) {
                 count_gen(level);
 
 #ifdef DEBUG 
@@ -452,33 +377,18 @@ void calc() {
         }
         else {
             up:
-            if (max_level < level) {
-                max_level = level;
-            }
-            if (level <= start_level) {
-                printf("level <= start_level\n");
+            if (level <= 0) {
+                printf("level <= 0\n");
                 break;
             }
 
             level--;
-            // #ifdef DEBUG 
-            // printf("uncross-1\n");
-            // #endif
-            do_uncross(level, stat[level].generator);
 
-            if (stat[level].generator != 1) {
-                level--;
-                // #ifdef DEBUG 
-                // printf("uncross-2\n");
-                // #endif
-                do_uncross(level, stat[level].generator);
+            set(stat[level].generator + 1, 0);
+            if (stat[level].generator != 0) {
+                set(stat[level].generator - 1, 0);
             }
-
-            level--;
-            // #ifdef DEBUG 
-            // printf("uncross-3\n");
-            // #endif
-            do_uncross(level, stat[level].generator);
+            set(stat[level].generator, 0);
         }
     }
 }
@@ -488,7 +398,7 @@ int main(int argc, char** argv) {
     char s[80];
 
     if (argc <= 1) {
-        printf("Usage: %s -n N [-o filename]\n  -n\n	 line count;\n  -o\n	 output file.\n", argv[0]);
+        printf("Usage: %s -n N [-o filename] [-full]\n  -n\n	 line count;\n  -o\n	 output file.\n", argv[0]);
 
         return 0;
     }
@@ -504,7 +414,7 @@ int main(int argc, char** argv) {
         else if (0 == strcmp("-full", s))
             full = 1;
         else {
-            printf("Invalid parameter: \"%s\".\nUsage: %s -n N [-o filename]\n  -n\n	 line count;\n  -o\n	 output file.\n", s, argv[0]);
+            printf("Invalid parameter: \"%s\".\nUsage: %s -n N [-o filename] [-full]\n  -n\n	 line count;\n  -o\n	 output file.\n", s, argv[0]);
 
             return 0;
         }
