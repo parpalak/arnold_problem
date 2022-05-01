@@ -20,8 +20,8 @@
 // #define DEBUG 1
 
 unsigned int n;
-
 unsigned int level = 0;
+unsigned int level_limit = 0;
 
 typedef uint_fast32_t line_num;
 
@@ -34,7 +34,7 @@ Stat stat[n_step1 + 1];
 line_num a[n1]; // Текущая перестановка 
 
 unsigned int b_free; // Количество оставшихся генераторов для подбора
-int max_s = 0;
+int max_level = 0;
 
 // User input
 char filename[80] = "";
@@ -51,7 +51,7 @@ void handle_signal(int sig) {
     double time_taken = end.tv_sec + end.tv_usec / 1e6 -
         start.tv_sec - start.tv_usec / 1e6; // in seconds
 
-    printf("\n [%f] level = %d/%d", time_taken, level, b_free);
+    printf("\n [%fs] level = %d/%d", time_taken, level, b_free);
     printf("\n%d\n", stat[n/2].generator);
 
     exit(0);
@@ -77,30 +77,38 @@ void handle_signal(int sig) {
 void count_gen(int level) {
     struct timeval end;
 
-    int s, i, max_defects1;
+    int i;
     FILE* f;
 
-    s = -1 + (n & 1); // Поправка от избытка во внешней области
-
-    for (i = 0; i < level; i++) {
-        s -= (stat[i].generator & 1) * 2 - 1;
-    }
-    if (s < 0) {
-        s = -s;
-    }
-    if (s < max_s || !full && s == max_s) {
+    if (level < max_level || !full && level == max_level) {
         return;
     }
-
-    max_s = s;
-    max_defects1 = ((n * (n + 1) / 2 - 3) - 3 * max_s) / 2;
 
     gettimeofday(&end, NULL);
     double time_taken = end.tv_sec + end.tv_usec / 1e6 - start.tv_sec - start.tv_usec / 1e6; // in seconds
 
+    max_level = level;
+
+    /**
+     * В конфигурации имеется level четных генераторов. Каждый четный генератор порождает
+     * белую область. С ним также ассоциированы два нечетных генератора, которые порождают
+     * две черные области. Но с генератором 0 ассоциирован только один черный генератор.
+     * 
+     * Кроме того, есть начальные черные (n-1)/2 генераторов, которые порождают
+     * неучтенные черные области.
+     * 
+     * Внешние области чередующегося цвета в количестве n + 1, которые пересекаются
+     * в начальном положении сканирующей прямой и которые тоже не учтены,
+     * вклада в разность не дают.
+     */
+
+    int s = level - 1 + (n - 1) / 2;
+
+    int max_defects1 = ((n * (n + 1) / 2 - 3) - 3 * s) / 2;
+
 
     if (strcmp(filename, "") == 0) {
-        printf(" %f A=%d %d)", time_taken, s, max_defects1);
+        printf(" [%fs] A=%d %d)", time_taken, s, max_defects1);
 
         for (i = n / 2; i--; ) {
             printf(" %d", i * 2 + 1);
@@ -136,15 +144,15 @@ void count_gen(int level) {
         fflush(stdout);
     }
     else {
-        f = fopen(filename, "a");
+        // f = fopen(filename, "a");
 
-        fprintf(f, " %d %d)", s, max_defects1);
-        for (i = 0; i < level; i++) {
-            fprintf(f, " %d", stat[i].generator);
-        }
+        // fprintf(f, " %d %d)", s, max_defects1);
+        // for (i = 0; i < level; i++) {
+        //     fprintf(f, " %d", stat[i].generator);
+        // }
 
-        fprintf(f, "\n");
-        fclose(f);
+        // fprintf(f, "\n");
+        // fclose(f);
     }
     return;
 }
@@ -160,7 +168,7 @@ void count_gen(int level) {
 void set(unsigned int generator, unsigned int cross_direction) {
     line_num i;
 
-    b_free += -2 * cross_direction + 1; // Корректируем кол-во оставшихся генераторов
+    // b_free += -2 * cross_direction + 1; // Корректируем кол-во оставшихся генераторов
 
     i = a[generator];
     a[generator] = a[generator + 1];
@@ -169,33 +177,33 @@ void set(unsigned int generator, unsigned int cross_direction) {
 
 // // Стратегия перебора -2, +2, +4 ...
 
-// int inline should_process(int cur_gen, int prev_gen) {
+// unsigned int inline should_process(line_num *cur_gen, line_num prev_gen) {
 
-//     int k = cur_gen < n - 3 && cur_gen <= prev_gen + 32;
+//     if (*cur_gen == INT_FAST8_MAX) {
+//         // С помощью условия пропускаем значение -2.
+//         *cur_gen = (prev_gen > 0) ? prev_gen - 2 : prev_gen + 2;
 
-//     return k;
-// }
-
-// void inline modify_generator(int* cur_gen, int prev_gen) {
-//     // Пример: предыдущий генератор 2. Инициализируем 2, сразу вычитаем, получаем 0
-//     // Следующим шагом инкрементим до максимума и вычитаем.
-//     *cur_gen += 2;
-
-//     if (*cur_gen < 0) {
-//         *cur_gen += 2;
+//         return 1;
 //     }
 
+//     *cur_gen += 2;
 //     if (*cur_gen == prev_gen) {
 //         *cur_gen += 2;
 //     }
+
+//     if (*cur_gen <= n - 3) {
+//         return 1;
+//     }
+
+//     return 0;
 // }
 
-// int inline init_working_gen(int generator) {
-//     return generator - 4;
+// line_num inline init_working_gen() {
+//     return INT_FAST8_MAX;
 // }
 
-// int inline init_skip_gen(int curr_generator) {
-//     return curr_generator + 2; // todo
+// line_num inline init_skip_gen(line_num curr_generator) {
+//     return n - 3; // todo
 // }
 
 // Стратегия перебора -2, n-3, n-5 ...
@@ -226,7 +234,7 @@ unsigned int inline should_process(line_num *cur_gen, line_num prev_gen) {
     return 1;
 }
 
-line_num inline init_working_gen(line_num generator) {
+line_num inline init_working_gen() {
     return INT_FAST8_MAX;
 }
 
@@ -256,14 +264,15 @@ line_num inline init_skip_gen(line_num curr_generator) {
 
 // Calculations for defectless configurations
 void calc() {
-    max_s = 0;
+    unsigned int level = 0;
+    max_level = 0;
 
-    // Часть оптимизации. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
+    // Оптимизация 0. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
     for (int i = n / 2; i--; ) {
         set(i * 2 + 1, 1);
     }
 
-    stat[level].generator = init_working_gen(n-5); // завышенное несуществующее значение, будет уменьшаться
+    stat[level].generator = init_working_gen(); // завышенное несуществующее значение, будет уменьшаться
 
     while (1) {
 #ifdef DEBUG 
@@ -300,7 +309,8 @@ void calc() {
              * 
              * 5. Если прямая n-1 начала идти справа налево, остальные прямые пересекать смысла нет.
              * Соответствующие генераторы должны уменьшаться подряд и заканчиваться генератором 0.
-             * Остальные генераторы применять в этом интервале не нужно.
+             * Остальные генераторы применять в этом интервале не нужно. Для отслеживания начала движения
+             * последней прямой используется a[n-2], а не a[n-1] в силу оптимизации 0.
              */
 
             if (curr_generator != 0) {
@@ -349,11 +359,15 @@ void calc() {
                 // Поэтому a[2] != 1, и пересечение a[1] == 0 и a[2] всегда возможно.
             }
 
-            // Оптимизация 5. Закомментирована, так как не дает прироста в эвристике -2, n-3, n-5...
-            // if (a[0] != n-1 && a[n-1] != n-1 && a[curr_generator + 1] != n-1) {
+            // if (curr_generator == n - 3 && a[curr_generator + 1] != n-1 && a[curr_generator] != 0) {
+            //     continue;
+            // }
+            // // Оптимизация 5. Закомментирована, так как не дает прироста в эвристике -2, n-3, n-5...
+            // if (a[0] != n-1 && a[n-2] != n-1 && a[curr_generator + 1] != n-1) {
             //     continue;
             // }
 
+            // Применяем белый генератор curr_generator и ассоциированные соседние черные генераторы
             set(curr_generator, 1);
             if (curr_generator != 0) {
                 set(curr_generator - 1, 1);
@@ -362,17 +376,17 @@ void calc() {
 
             level++;
 
-            if (!b_free) {
+            if (level == level_limit) {
                 count_gen(level);
 
 #ifdef DEBUG 
                 printf("count-gen\n");
 #endif
-                // goto up;
+                // goto up; // почему-то тормозит
                 stat[level].generator = init_skip_gen(curr_generator); // перебора не будет, чтобы вернуться
             }
             else {
-                stat[level].generator = init_working_gen(curr_generator); // запускаем перебор заново на другом уровне
+                stat[level].generator = init_working_gen(); // запускаем перебор заново на другом уровне
             }
         }
         else {
@@ -384,6 +398,7 @@ void calc() {
 
             level--;
 
+            // Отменяем генераторы в обратном порядке, так как они не коммутируют
             set(stat[level].generator + 1, 0);
             if (stat[level].generator != 0) {
                 set(stat[level].generator - 1, 0);
@@ -433,7 +448,9 @@ int main(int argc, char** argv) {
     }
 
     b_free = n * (n - 1) / 2;
+    level_limit = (n * (n - 2) + 3) / 6;
 
+    // Подготовка начальной перестановки
     for (i = 0; i < n; i++) {
         a[i] = i;
     }
@@ -441,7 +458,13 @@ int main(int argc, char** argv) {
     gettimeofday(&start, NULL);
     calc();
 
-    printf("---------->>> Process terminated.\n");
+    struct timeval end;
+
+    gettimeofday(&end, NULL);
+    double time_taken = end.tv_sec + end.tv_usec / 1e6 -
+        start.tv_sec - start.tv_usec / 1e6; // in seconds
+
+    printf("---------->>> [%fs] Process terminated.\n", time_taken);
 
     return 0;
 }
