@@ -1,6 +1,6 @@
 /**
  * Программа осуществляет обход дерева для поиска бездефектных конфигураций.
- * 
+ *
  * Применяется оптимизация для нечетного количества прямых, зафиксирована раскраска, начальные генераторы.
  * Черные области могут быть только треугольниками, так как черные генераторы применяются сразу после белых
  * и тем самым не перебираются.
@@ -20,7 +20,6 @@
 // #define DEBUG 1
 
 unsigned int n;
-unsigned int level = 0;
 unsigned int level_limit = 0;
 
 typedef uint_fast32_t line_num;
@@ -42,8 +41,6 @@ int full = 0;
 
 struct timeval start;
 
-double last_signal = -10.0;
-
 void handle_signal(int sig) {
     struct timeval end;
 
@@ -51,109 +48,67 @@ void handle_signal(int sig) {
     double time_taken = end.tv_sec + end.tv_usec / 1e6 -
         start.tv_sec - start.tv_usec / 1e6; // in seconds
 
-    printf("\n [%fs] level = %d/%d", time_taken, level, b_free);
-    printf("\n%d\n", stat[n/2].generator);
+    printf("\n [%fs] bye\n", time_taken);
 
     exit(0);
 
 
-    for (int i = 0; i < level; i++) {
-        if (stat[i].generator % 2) {
-            continue;
-        }
-        printf("%.*s", stat[i].generator, "                            ");
-        printf(" %d \n", stat[i].generator);
-    }
-
-    printf("\n");
-
-    if (time_taken - last_signal < 1) {
-        exit(0);
-    }
-
-    last_signal = time_taken;
 }
 
-void count_gen(int level) {
-    struct timeval end;
+void count_gen(unsigned long int iterations) {
 
-    int i;
-    FILE* f;
-
-    if (level < max_level || !full && level == max_level) {
+    if (level_limit < max_level || !full && level_limit == max_level) {
         return;
     }
+
+    struct timeval end;
+    int i;
 
     gettimeofday(&end, NULL);
     double time_taken = end.tv_sec + end.tv_usec / 1e6 - start.tv_sec - start.tv_usec / 1e6; // in seconds
 
-    max_level = level;
+    max_level = level_limit;
 
     /**
      * В конфигурации имеется level четных генераторов. Каждый четный генератор порождает
      * белую область. С ним также ассоциированы два нечетных генератора, которые порождают
      * две черные области. Но с генератором 0 ассоциирован только один черный генератор.
-     * 
+     *
      * Кроме того, есть начальные черные (n-1)/2 генераторов, которые порождают
      * неучтенные черные области.
-     * 
+     *
      * Внешние области чередующегося цвета в количестве n + 1, которые пересекаются
      * в начальном положении сканирующей прямой и которые тоже не учтены,
      * вклада в разность не дают.
      */
 
-    int s = level - 1 + (n - 1) / 2;
+    int s = level_limit - 1 + (n - 1) / 2;
 
-    int max_defects1 = ((n * (n + 1) / 2 - 3) - 3 * s) / 2;
+    printf(" [%fs] A=%d", time_taken, s);
+    printf(" i=%lu)", iterations);
 
-
-    if (strcmp(filename, "") == 0) {
-        printf(" [%fs] A=%d %d)", time_taken, s, max_defects1);
-
-        for (i = n / 2; i--; ) {
-            printf(" %d", i * 2 + 1);
-        }
-
-        for (i = 0; i < level; i++) {
-            printf(" %d", stat[i].generator);
-            if (stat[i].generator == 0) {
-                printf(" 1");
-            }
-            else if (stat[i].generator % 2 == 0) {
-                printf(" %d %d", stat[i].generator - 1, stat[i].generator + 1);
-            }
-        }
-
-        printf("\n");
-
-        // for (int i = 0; i < level; i++) {
-        //     // if (stat[i].generator % 2) {
-        //     //     continue;
-        //     // }
-        //     printf("%.*s", stat[i].generator, "||||||||||||||||||||||||||||||||||||||||||||||||||||");
-        //     printf("><");
-        //     printf("%.*s\n", n - 2 - stat[i].generator, "||||||||||||||||||||||||||||||||||||||||||||||||||||");
-        // }
-
-        // printf("\n");
-
-
-        fflush(NULL);
-        fflush(NULL);
-        fflush(stdout);
-        fflush(stdout);
+    for (i = n / 2; i--; ) {
+        printf(" %d", i * 2 + 1);
     }
-    else {
-        // f = fopen(filename, "a");
 
-        // fprintf(f, " %d %d)", s, max_defects1);
-        // for (i = 0; i < level; i++) {
-        //     fprintf(f, " %d", stat[i].generator);
-        // }
-
-        // fprintf(f, "\n");
-        // fclose(f);
+    for (i = level_limit; i--;) {
+        // Белый генератор
+        printf(" %d", stat[i].generator);
+        // Ассоциированные черные генераторы
+        if (stat[i].generator == 0) {
+            printf(" 1");
+        }
+        else if (stat[i].generator % 2 == 0) {
+            printf(" %d %d", stat[i].generator - 1, stat[i].generator + 1);
+        }
     }
+
+    printf("\n");
+
+    fflush(NULL);
+    fflush(NULL);
+    fflush(stdout);
+    fflush(stdout);
     return;
 }
 
@@ -173,6 +128,43 @@ void set(unsigned int generator, unsigned int cross_direction) {
     i = a[generator];
     a[generator] = a[generator + 1];
     a[generator + 1] = i;
+}
+
+/**
+ * Применение белого генератора и двух ассоциированных (соседних) черных.
+ */
+void do_cross_with_assoc(unsigned int generator) {
+    line_num i;
+
+    i = a[generator];
+    if (generator > 0) {
+        a[generator] = a[generator - 1];
+        a[generator - 1] = a[generator + 1];
+    }
+    else {
+        a[generator] = a[generator + 1];
+    }
+    a[generator + 1] = a[generator + 2];
+    a[generator + 2] = i;
+}
+
+/**
+ * Отмена применения белого генератора и двух ассоциированных (соседних) черных.
+ */
+void do_uncross_with_assoc(unsigned int generator) {
+    line_num i;
+
+    i = a[generator + 2];
+    a[generator + 2] = a[generator + 1];
+
+    if (generator > 0) {
+        a[generator + 1] = a[generator - 1];
+        a[generator - 1] = a[generator];
+    }
+    else {
+        a[generator + 1] = a[generator];
+    }
+    a[generator] = i;
 }
 
 // // Стратегия перебора -2, +2, +4 ...
@@ -207,7 +199,7 @@ void set(unsigned int generator, unsigned int cross_direction) {
 // }
 
 // Стратегия перебора -2, n-3, n-5 ...
-unsigned int inline should_process(line_num *cur_gen, line_num prev_gen) {
+unsigned int inline should_process(line_num* cur_gen, line_num prev_gen) {
     // Пример: если предыдущий генератор 2, заканчивать надо на 4
 
     if (*cur_gen == INT_FAST8_MAX) {
@@ -222,7 +214,7 @@ unsigned int inline should_process(line_num *cur_gen, line_num prev_gen) {
             // Предотвращаем зацикливание. Когда prev_gen на максимуме и равен n-3, переключать на n-3 нельзя
             return 0;
         }
-        *cur_gen =  n - 3;
+        *cur_gen = n - 3;
         return 1;
     }
 
@@ -264,7 +256,8 @@ line_num inline init_skip_gen(line_num curr_generator) {
 
 // Calculations for defectless configurations
 void calc() {
-    unsigned int level = 0;
+    int level = level_limit - 1;
+    unsigned long int iterations = 0;
     max_level = 0;
 
     // Оптимизация 0. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
@@ -272,41 +265,43 @@ void calc() {
         set(i * 2 + 1, 1);
     }
 
+    stat[level + 1].generator = 0; // Начальное значение для эвристики. TODO может меняться вместе с ней.
     stat[level].generator = init_working_gen(); // завышенное несуществующее значение, будет уменьшаться
 
     while (1) {
+        // iterations++; // Раскомментировать при добавлении новых условий оптимизации для "профилировки".
 #ifdef DEBUG 
         printf("-->> start lev = %d gen = %d\n", level, stat[level].generator);
 #endif
 
-        if (should_process(&stat[level].generator, level > 0 ? stat[level-1].generator : 0)) {
+        if (should_process(&stat[level].generator, stat[level + 1].generator)) {
 
             unsigned int curr_generator = stat[level].generator;
 
 #ifdef DEBUG 
-            printf("test lev = %d gen = %d prev = %d b_free = %d\n", level, curr_generator, stat[level-1].generator, b_free);
+            printf("test lev = %d gen = %d prev = %d b_free = %d\n", level, curr_generator, stat[level - 1].generator, b_free);
 #endif
 
             /**
              * Оптимизации.
-             * 
+             *
              * 1. Генератор должен пересекать только прямые, которые еще не пересекались.
              * Прямые пересекались, если левая прямая имеет больший номер, чем правая.
-             * 
+             *
              * 2. Последние генераторы должны образовать (n-1)/2 внешних черных двуугольников.
              * Стороны двуугольников - прямые с убывающими номерами.
              * Эта оптимизация - продолжение фиксации начальных генераторов. Применима только для черных генераторов.
              * Например, прямые 0 и 1 могут пересекаться только последним генератором n - 2 в самом конце.
              * В середине их нельзя пересекать. Тут проверяем хотя бы совпадение генератора и прямых.
              * Можно проверить, что это именно последний генератор, но на практике это не дает заметного ускорения.
-             * 
+             *
              * 3. Черные генераторы исключаются из перебора.
              * Сразу после применения любого белого генератора применяются два соседних черных генератора
              * (для белого генератора 0 только один соседний правый генератор 1).
-             * 
+             *
              * 4. Генератор 0 применяется только один раз для первой и последней прямой.
              * Он образует оставшийся внешний черный двуугольник, образованный прямыми 0 и n-1.
-             * 
+             *
              * 5. Если прямая n-1 начала идти справа налево, остальные прямые пересекать смысла нет.
              * Соответствующие генераторы должны уменьшаться подряд и заканчиваться генератором 0.
              * Остальные генераторы применять в этом интервале не нужно. Для отслеживания начала движения
@@ -315,31 +310,34 @@ void calc() {
 
             if (curr_generator != 0) {
                 // Оптимизация 1 и 3.
+                // На самом деле если ее убрать, в перебор пойдут недопустимые наборы генераторов
                 if (a[curr_generator - 1] > a[curr_generator + 1]) {
                     continue;
                 }
 
                 // Оптимизация 1 и 3.
+                // На самом деле если ее убрать, в перебор пойдут недопустимые наборы генераторов
                 if (a[curr_generator] > a[curr_generator + 2]) {
                     continue;
                 }
 
                 // Оптимизация 2.
-                if (a[curr_generator] + 1 == a[curr_generator + 2] && curr_generator + 1 + a[curr_generator + 2] !=  n-1) {
+                if (a[curr_generator] + 1 == a[curr_generator + 2] && curr_generator + 1 + a[curr_generator + 2] != n - 1) {
                     continue;
                 }
 
                 // Оптимизация 1.
-                if (a[curr_generator] > a[curr_generator + 1]) {
-                    continue;
-                }
+                // Как показывает профилировка, после остальных оптимизаций эта не дает ускорения
+                // if (a[curr_generator] > a[curr_generator + 1]) {
+                //     continue;
+                // }
 
                 // Оптимизация 2.
-                if (a[curr_generator - 1] + 1 == a[curr_generator + 1] && curr_generator - 1 + a[curr_generator + 1] !=  n-1) {
+                if (a[curr_generator - 1] + 1 == a[curr_generator + 1] && curr_generator - 1 + a[curr_generator + 1] != n - 1) {
                     continue;
                 }
 
-                // Оптимизация 2. Закомментировано, потому что практика показывает, что никакого ускорения от этих проверок нет.
+                // Оптимизация 2. Закомментировано, потому что профилировка показывает, что количество итераций слегка сокращается, а время выполнения увеличивается.
                 // if (a[curr_generator - 1] - 1 == a[curr_generator] && a[curr_generator] + curr_generator == n-1) {
                 //     continue;
                 // }
@@ -359,51 +357,49 @@ void calc() {
                 // Поэтому a[2] != 1, и пересечение a[1] == 0 и a[2] всегда возможно.
             }
 
-            // if (curr_generator == n - 3 && a[curr_generator + 1] != n-1 && a[curr_generator] != 0) {
-            //     continue;
-            // }
             // // Оптимизация 5. Закомментирована, так как не дает прироста в эвристике -2, n-3, n-5...
             // if (a[0] != n-1 && a[n-2] != n-1 && a[curr_generator + 1] != n-1) {
             //     continue;
             // }
 
+            // Ограничение на поиск: максимальный генератор можно применить только два раза.
+            // Слишком сильное, долгий перебор, но может пригодится в каких-нибудь эвристиках.
+            // if (curr_generator == n - 3 && a[curr_generator + 1] != n-1 && a[curr_generator] != 0) {
+            //     continue;
+            // }
+
             // Применяем белый генератор curr_generator и ассоциированные соседние черные генераторы
-            set(curr_generator, 1);
-            if (curr_generator != 0) {
-                set(curr_generator - 1, 1);
-            }
-            set(curr_generator + 1, 1);
+            do_cross_with_assoc(curr_generator);
 
-            level++;
+            level--;
 
-            if (level == level_limit) {
-                count_gen(level);
+            if (level == -1) {
+                count_gen(iterations);
 
 #ifdef DEBUG 
                 printf("count-gen\n");
 #endif
-                // goto up; // почему-то тормозит
-                stat[level].generator = init_skip_gen(curr_generator); // перебора не будет, чтобы вернуться
+                goto up; // эквивалентно строке ниже, при изменении кода другой вариант может быть быстрее
+                // stat[level].generator = init_skip_gen(curr_generator); // перебора не будет, чтобы вернуться
             }
             else {
                 stat[level].generator = init_working_gen(); // запускаем перебор заново на другом уровне
             }
         }
         else {
-            up:
-            if (level <= 0) {
-                printf("level <= 0\n");
-                break;
-            }
+        up:
+            // Для корректной работы нужно это условие. Без него программа зациклится или вызовет seg fault.
+            // Но его пропуск ускоряет программу. При этом она всё равно распечатает конфигурации.
+            // Раскомментировать, например, при полном поиске.
+            // if (level == level_limit - 1) {
+            //     printf("search finished\n");
+            //     break;
+            // }
 
-            level--;
+            level++;
 
             // Отменяем генераторы в обратном порядке, так как они не коммутируют
-            set(stat[level].generator + 1, 0);
-            if (stat[level].generator != 0) {
-                set(stat[level].generator - 1, 0);
-            }
-            set(stat[level].generator, 0);
+            do_uncross_with_assoc(stat[level].generator);
         }
     }
 }
