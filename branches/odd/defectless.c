@@ -14,7 +14,7 @@
 #include <signal.h>
 
 // May vary
-#define n1 47
+#define n1 53
 #define n_step1 (n1*(n1-1) / 2)
 
 // #define DEBUG 1
@@ -26,6 +26,8 @@ typedef uint_fast32_t line_num;
 
 typedef struct {
     line_num generator;
+    unsigned int sequence_num; // Порядковый номер убывающей на 2 последовательности генераторов. Инкрементируется, когда текущий генератор больше предыдущего.
+    unsigned long int iterations;
 } Stat;
 
 Stat stat[n_step1 + 1];
@@ -41,6 +43,59 @@ int full = 0;
 
 struct timeval start;
 
+void dump_generators() {
+    int a2[n1];
+
+    void set2(unsigned int generator) {
+        line_num i;
+
+        i = a2[generator];
+        a2[generator] = a2[generator + 1];
+        a2[generator + 1] = i;
+    }
+
+    for (int i = 0; i < n; i++) {
+        a2[i] = i;
+    }
+    
+    for (int i = n / 2; i--; ) {
+        set2(i * 2 + 1);
+    }
+
+    for (int i = level_limit; i--;) {
+        if (i < level_limit - 2 && (stat[i].iterations == 0 || n-3 < stat[i].generator)) {
+            break;
+        }
+
+
+        if (stat[i-1].sequence_num != stat[i].sequence_num) {
+            printf("\n [sn=%02d, i=%.7e] ", stat[i].sequence_num, (double)stat[i-1].iterations);
+
+            for (int j = 0; j < n; j++) {
+                printf(" %2d", a2[j]);
+            }
+
+            int j = 1 + (n-3 - stat[i].generator)/2;
+            if (j > 200) {
+                j = 200;
+            }
+            if (j < 1) {
+                j = 1;
+            }
+            for (; j-- ;) {
+                printf("   ");
+            }
+        }
+        printf(" %2d", stat[i].generator);
+
+        set2(stat[i].generator);
+        if (stat[i].generator > 0) {
+            set2(stat[i].generator - 1);
+        }
+        set2(stat[i].generator + 1);
+    }
+}
+
 void handle_signal(int sig) {
     struct timeval end;
 
@@ -48,11 +103,13 @@ void handle_signal(int sig) {
     double time_taken = end.tv_sec + end.tv_usec / 1e6 -
         start.tv_sec - start.tv_usec / 1e6; // in seconds
 
+    printf("\n [%fs] dumping:\n", time_taken);
+
+    dump_generators();
+
     printf("\n [%fs] bye\n", time_taken);
 
-    exit(0);
-
-
+    // exit(0);
 }
 
 void count_gen(unsigned long int iterations) {
@@ -102,6 +159,10 @@ void count_gen(unsigned long int iterations) {
             printf(" %d %d", stat[i].generator - 1, stat[i].generator + 1);
         }
     }
+
+    printf("\n");
+
+    dump_generators();
 
     printf("\n");
 
@@ -199,12 +260,91 @@ void do_uncross_with_assoc(unsigned int generator) {
 // }
 
 // Стратегия перебора -2, n-3, n-5 ...
-unsigned int inline should_process(line_num* cur_gen, line_num prev_gen) {
+unsigned int inline should_process(line_num* cur_gen, line_num prev_gen, unsigned int sequence_num) {
     // Пример: если предыдущий генератор 2, заканчивать надо на 4
+
+    int max_gen () {
+        if (sequence_num < 12 && sequence_num % 2 == 1) {
+//            printf("sn=%d, %d\n", sequence_num, n-3 - (sequence_num + 1) / 2);
+            return n-3 - (sequence_num + 1);
+        }
+
+//         if (sequence_num == 6) {
+//             return n - 5;
+//         }
+
+        // if (sequence_num == 10) {
+        //     return 30;
+        // }
+
+        // if (sequence_num == 11) {
+        //     return 24;
+        // }
+
+        // if (sequence_num == 12) {
+        //     return 26;
+        // }
+
+        // if (sequence_num == 13) {
+        //     return 28;
+        // }
+    
+        // if (sequence_num == 14) {
+        //     return 30;
+        // }
+
+        if (sequence_num == 12) {
+            return 34;
+        }
+
+        if (sequence_num == 13) {
+            return 30;
+        }
+
+        if (sequence_num == 14) {
+            return 32;
+        }
+
+        if (sequence_num == 15) {
+            return 34;
+        }
+
+        if (sequence_num == 16) {
+            return 36;
+        }
+
+        if (sequence_num == 17) {
+            return 38;
+        }
+
+        if (sequence_num == 18) {
+            return 40;
+        }
+
+        if (sequence_num == 19) {
+            return 42;
+        }
+
+        if (sequence_num == 20) {
+            return 44;
+        }
+
+
+        return n - 3;
+    }
 
     if (*cur_gen == INT_FAST8_MAX) {
         // С помощью условия пропускаем значение -2.
-        *cur_gen = (prev_gen > 0) ? prev_gen - 2 : n - 3;
+        if (prev_gen > 0) {
+
+            if (sequence_num == 12 && prev_gen == 12) {
+                return 0;
+            }
+
+            *cur_gen = prev_gen - 2;
+        } else {
+            *cur_gen = max_gen();
+        }
 
         return 1;
     }
@@ -214,7 +354,7 @@ unsigned int inline should_process(line_num* cur_gen, line_num prev_gen) {
             // Предотвращаем зацикливание. Когда prev_gen на максимуме и равен n-3, переключать на n-3 нельзя
             return 0;
         }
-        *cur_gen = n - 3;
+        *cur_gen = max_gen();
         return 1;
     }
 
@@ -257,7 +397,7 @@ line_num inline init_skip_gen(line_num curr_generator) {
 // Calculations for defectless configurations
 void calc() {
     int level = level_limit - 1;
-    unsigned long int iterations = 0;
+    unsigned long int iterations = 1;
     max_level = 0;
 
     // Оптимизация 0. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
@@ -266,15 +406,18 @@ void calc() {
     }
 
     stat[level + 1].generator = 0; // Начальное значение для эвристики. TODO может меняться вместе с ней.
+    stat[level + 1].sequence_num = 0;
+    stat[level + 1].iterations = 0;
+
     stat[level].generator = init_working_gen(); // завышенное несуществующее значение, будет уменьшаться
 
     while (1) {
-        // iterations++; // Раскомментировать при добавлении новых условий оптимизации для "профилировки".
+        iterations++; // Раскомментировать при добавлении новых условий оптимизации для "профилировки".
 #ifdef DEBUG 
         printf("-->> start lev = %d gen = %d\n", level, stat[level].generator);
 #endif
 
-        if (should_process(&stat[level].generator, stat[level + 1].generator)) {
+        if (should_process(&stat[level].generator, stat[level + 1].generator, stat[level].sequence_num)) {
 
             unsigned int curr_generator = stat[level].generator;
 
@@ -371,7 +514,7 @@ void calc() {
             // Применяем белый генератор curr_generator и ассоциированные соседние черные генераторы
             do_cross_with_assoc(curr_generator);
 
-            level--;
+            level--;  // Уменьшается при продвижении вглубь
 
             if (level == -1) {
                 count_gen(iterations);
@@ -384,6 +527,9 @@ void calc() {
             }
             else {
                 stat[level].generator = init_working_gen(); // запускаем перебор заново на другом уровне
+                stat[level].iterations = iterations;
+                // Запоминаем номер подпоследовательности убывающих на 1 генераторов
+                stat[level].sequence_num = stat[level + 1].sequence_num + (curr_generator > stat[level + 2].generator ? 1 : 0);
             }
         }
         else {
@@ -395,6 +541,11 @@ void calc() {
             //     printf("search finished\n");
             //     break;
             // }
+
+            stat[level].generator = 0;
+            stat[level].iterations = 0;
+            // Запоминаем номер подпоследовательности убывающих на 1 генераторов
+            stat[level].sequence_num = 0;
 
             level++;
 

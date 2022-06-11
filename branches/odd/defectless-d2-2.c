@@ -5,7 +5,7 @@
 #include <signal.h>
 
 // May vary
-#define n1 67
+#define n1 69
 #define n_step1 (n1*(n1-1) / 2)
 
 // #define DEBUG 1
@@ -84,7 +84,7 @@ void dump_rearrangement() {
     printf("\n");
 }
 
-void count_gen(int level) {
+void count_gen(int level, unsigned long int iterations) {
     struct timeval end;
 
     int s, i;
@@ -113,7 +113,7 @@ void count_gen(int level) {
     // dump_rearrangement();
 
     if (strcmp(filename, "") == 0) {
-        printf(" %f A=%d)", time_taken, s);
+        printf(" %f A=%d i=%u)", time_taken, s, iterations);
 
         for (i = level; i--; ) {
             printf(" %d", stat[i].generator);
@@ -305,6 +305,7 @@ int inline init_working_gen(int generator) {
 // Calculations for defectless configurations
 void calc() {
     int curr_generator, start_level;
+    unsigned long int iterations = 0;
     //    int level = 0;
 
     max_s = 0;
@@ -325,6 +326,7 @@ void calc() {
     stat[level].prev_generator = 0;
 
     while (1) {
+        iterations++;
 #ifdef DEBUG 
         printf("-->> start lev = %d gen = %d prev_gen = %d\n", level, stat[level].generator, stat[level].prev_generator);
 #endif
@@ -369,7 +371,7 @@ void calc() {
 #endif
 
             if (level == b_free) {
-                count_gen(level);
+                count_gen(level, iterations);
 
 #ifdef DEBUG 
                 printf("count-gen\n");
@@ -384,7 +386,7 @@ void calc() {
         else {
         up:
             if (level <= start_level) {
-                printf("level <= start_level\n");
+                printf("level <= start_level %u\n", iterations);
                 break;
             }
 

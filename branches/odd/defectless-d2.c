@@ -22,7 +22,8 @@ typedef struct {
 Stat stat[n_step1 + 1];
 
 int a[n1]; // Текущая перестановка
-int b[n1]; // Перестановка снизу
+int a2[n1]; // Перестановка снизу
+int b[n1][n1]; // B-матрица
 
 int b_free; // Количество оставшихся генераторов для подбора
 int max_s = -100;
@@ -62,19 +63,19 @@ void handle_signal(int sig) {
 }
 
 int inline is_correct() {
-    if (a[0] != b[1]) {
+    if (a[0] != a2[1]) {
         return 0;
     }
 
-    if (a[1] != b[0]) {
+    if (a[1] != a2[0]) {
         return 0;
     }
 
     for (int i = 3; i < n; i += 2) {
-        if (a[i] != b[i + 1]) {
+        if (a[i] != a2[i + 1]) {
             return 0;
         }
-        if (a[i + 1] != b[i]) {
+        if (a[i + 1] != a2[i]) {
             return 0;
         }
     }
@@ -94,13 +95,13 @@ void dump_rearrangement() {
     printf("\nb = ");
 
     for (i = 0; i < n; i++) {
-        printf(" %d", b[i]);
+        printf(" %d", a2[i]);
     }
 
     printf("\n");
 }
 
-void count_gen(int level) {
+void count_gen(int level, unsigned long int iterations) {
     struct timeval end;
 
     int s, i;
@@ -131,7 +132,7 @@ void count_gen(int level) {
     int skipped[n1];
 
     if (strcmp(filename, "") == 0) {
-        printf(" %f A=%d)", time_taken, s);
+        printf(" %f A=%d i=%u)", time_taken, s, iterations);
         for (i = 0; i < level; i++) {
             printf(" %d", stat[i].generator);
         }
@@ -202,9 +203,15 @@ void inline set(int generator, int cross_direction) {
     a[generator] = a[generator + 1];
     a[generator + 1] = i;
 
-    i = b[generator];
-    b[generator] = b[generator + 1];
-    b[generator + 1] = i;
+    i = a2[generator];
+    a2[generator] = a2[generator + 1];
+    a2[generator + 1] = i;
+
+    b[a[generator]][a[generator + 1]] = cross_direction;
+    b[a[generator + 1]][a[generator]] = cross_direction;
+    b[a2[generator]][a2[generator + 1]] = cross_direction;
+    b[a2[generator + 1]][a2[generator]] = cross_direction;
+
 }
 
 void inline do_cross(int level, int generator) {
@@ -235,7 +242,7 @@ void inline do_uncross(int level, int generator) {
     // d[generator + 1] = stat[level + 1].prev_polygon_cnt;
 }
 
-// Стратегия перебора -2, +2, +4 ...
+// // Стратегия перебора -2, +2, +4 ...
 
 // int inline should_process(int cur_gen, int prev_gen) {
 //     int k = cur_gen < n - 3;
@@ -326,6 +333,7 @@ int inline init_skip_gen(int curr_generator) {
 // Calculations for defectless configurations
 void calc() {
     int curr_generator, start_level;
+    unsigned long int iterations = 0;
     //    int level = 0;
 
     max_s = 0;
@@ -342,6 +350,7 @@ void calc() {
     stat[level].var = 0;
 
     while (1) {
+        iterations++;
 #ifdef DEBUG 
         printf("-->> start lev = %d gen = %d\n", level, stat[level].generator);
 #endif
@@ -355,13 +364,63 @@ void calc() {
             printf("test lev = %d gen = %d prev = %d b_free = %d\n", level, curr_generator, stat[level].var, b_free);
 #endif
 
-            if (a[curr_generator - 1] > a[curr_generator + 1]) {
+            if (b[a[curr_generator - 1]][a[curr_generator + 1]]) {
                 continue;
             }
 
-            if (a[curr_generator] > a[curr_generator + 2]) {
+            if (b[a[curr_generator]][a[curr_generator + 2]]) {
                 continue;
             }
+
+            // if (b[a[curr_generator]][a[curr_generator + 1]]) {
+            //     continue;
+            // }
+
+            // if (a[curr_generator - 1] + 2> a[curr_generator + 1]) {
+            //     continue;
+            // }
+
+            // if (a[curr_generator] + 2 > a[curr_generator + 2]) {
+            //     continue;
+            // }
+            
+            if (b[a2[curr_generator - 1]][a2[curr_generator + 1]]) {
+                continue;
+            }
+            
+            if (b[a2[curr_generator]][a2[curr_generator + 2]]) {
+                continue;
+            }
+
+            // if (b[a2[curr_generator]][a2[curr_generator + 1]]) {
+            //     continue;
+            // }
+
+            // if (a2[curr_generator - 1] - 2 < a2[curr_generator + 1]) {
+            //     continue;
+            // }
+
+            // if (a2[curr_generator] - 2 < a2[curr_generator + 2]) {
+            //     continue;
+            // }
+            // if (a2[curr_generator - 1] < 2 + a2[curr_generator + 1]) {
+            //     continue;
+            // }
+
+            // if (b[curr_generator] - 1 < b[curr_generator + 2]) {
+            //     continue;
+            // }
+
+            // // if (b[curr_generator] < b[curr_generator + 1]) {
+            // //     continue;
+            // // }
+
+            // if (b[curr_generator] - 1 == b[curr_generator + 2]/*  && curr_generator + 1 + a[curr_generator + 2] != n - 1 */) {
+            //     continue;
+            // }
+            // if (b[curr_generator - 1] - 1 == b[curr_generator + 1]/*  && curr_generator - 1 + a[curr_generator + 1] != n - 1 */) {
+            //     continue;
+            // }
 
             do_cross(level, curr_generator);
             level++;
@@ -382,9 +441,9 @@ void calc() {
 #endif
 
             if (level == b_free) {
-                if (is_correct()) {
-                    count_gen(level);
-                }
+                // if (is_correct()) {
+                    count_gen(level, iterations);
+                // }
 
 #ifdef DEBUG 
                 printf("count-gen\n");
@@ -399,7 +458,7 @@ void calc() {
         else {
 up:
             if (level <= start_level) {
-                printf("level <= start_level\n");
+                printf("level <= start_level %u\n", iterations);
                 break;
             }
 
@@ -456,7 +515,7 @@ int main(int argc, char** argv) {
 
     for (i = 0; i < n; i++) {
         a[i] = i;
-        b[i] = n - 1 - i;
+        a2[i] = n - 1 - i;
     }
 
     gettimeofday(&start, NULL);
