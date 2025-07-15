@@ -130,10 +130,11 @@ job *jobs;
 
 typedef struct {
     unsigned long int idle_time, run_time, network_time;
+    unsigned long int sum_iterations;
     struct timeval last_updated_at;
-} worker_timings;
+} worker_stat;
 
-worker_timings *worker_timings_array;
+worker_stat *worker_stat_array;
 
 void print_timings(const int to_stdout) {
     FILE *f;
@@ -145,35 +146,45 @@ void print_timings(const int to_stdout) {
         f = stdout;
     }
 
-    unsigned long int workers_run_time = 0, workers_idle_time = 0, network_time = 0;
+    unsigned long int workers_run_time = 0, workers_idle_time = 0, network_time = 0, total_iterations = 0;
 
     for (int i = 0; i < worker_count; ++i) {
-        workers_run_time += worker_timings_array[i].run_time;
-        workers_idle_time += worker_timings_array[i].idle_time;
-        network_time += worker_timings_array[i].network_time;
+        workers_run_time += worker_stat_array[i].run_time;
+        workers_idle_time += worker_stat_array[i].idle_time;
+        network_time += worker_stat_array[i].network_time;
+        total_iterations += worker_stat_array[i].sum_iterations;
     }
 
     fprintf(f,
-            "Total worker run time = %lu ms\n"
-            "Total worker idle time = %lu ms\n"
-            "Worker utilization = %f\n"
-            "Speed up = %f (worker count = %d)\n"
-            "d_push_msg_time = %lu u, count = %lu, avg = %lu u\n"
-            "Dispatcher run time = %lu ms\n"
-            "Dispatcher idle time = %lu ms\n"
-            "network_time = %lu ms\n",
-            workers_run_time,
-            workers_idle_time,
-            (double) workers_run_time / ((double) workers_run_time + (double) workers_idle_time),
-            (double) workers_run_time / (double) (dispatcher_timings.run_time + dispatcher_timings.idle_time),
+            "\n--- Total worker info (count = %d) ---\n"
+            "Run time    %11.3f s\n"
+            "Idle time   %11.3f s\n"
+            "Utilization %11.3f %%\n"
+            "Speed up = %f\n"
+            "\n--- Dispatcher info ---\n"
+            "Enqueue total time = %f s, count = %lu, avg = %lu us\n"
+            "Run time    %11.3f s\n"
+            "Idle time   %11.3f s\n"
+            "Utilization %11.3f %%\n"
+            "\n--- Other info ---\n"
+            "Total iterations  %lu\n"
+            "Time quantum      %d ms\n"
+            "Interconnect loss %.3f s\n\n",
             worker_count,
-            dispatcher_timings.enqueue_time, dispatcher_timings.enqueue_count,
+            (double) workers_run_time / 1000000.0,
+            (double) workers_idle_time / 1000000.0,
+            100.0 * (double) workers_run_time / ((double) workers_run_time + (double) workers_idle_time),
+            (double) workers_run_time / (double) (dispatcher_timings.run_time + dispatcher_timings.idle_time),
+            (double) dispatcher_timings.enqueue_time / 1000000.0, dispatcher_timings.enqueue_count,
             dispatcher_timings.enqueue_time > 0
                 ? dispatcher_timings.enqueue_time / dispatcher_timings.enqueue_count
                 : 0,
-            dispatcher_timings.run_time,
-            dispatcher_timings.idle_time,
-            network_time
+            (double) dispatcher_timings.run_time / 1000000.0,
+            (double) dispatcher_timings.idle_time / 1000000.0,
+            100.0 / (1 + (double) dispatcher_timings.idle_time / (double) dispatcher_timings.run_time),
+            total_iterations,
+            TQ,
+            (double) network_time / 1000000.0
     );
     if (!to_stdout) {
         fclose(f);
@@ -272,7 +283,7 @@ static void load_queue(const char *filename) {
     free(str);
 }
 
-void copy_timings_from_message(worker_timings *timings, const Message *msg) {
+void copy_timings_from_message(worker_stat *timings, const Message *msg) {
     timings->idle_time = msg->w_idle_time;
     timings->run_time = msg->w_run_time;
     timings->network_time = msg->network_time;
@@ -346,8 +357,8 @@ static void handle_interrupt(int s) {
 
 void do_dispatcher(const int process_num, const char *dump_filename, const char *node_name) {
     Message message, *msg;
+    const int message_size = sizeof(Message) / sizeof(int);
     MPI_Status status;
-    int worker_id;
 
     struct timeval t1, work_start, waiting_start;
 
@@ -364,16 +375,17 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
     init_worker_statuses(process_num - 1);
 
     jobs = (job *) malloc(worker_count * sizeof(job));
-    worker_timings_array = (worker_timings *) malloc(worker_count * sizeof(worker_timings));
+    worker_stat_array = (worker_stat *) malloc(worker_count * sizeof(worker_stat));
 
     for (int i = 0; i < worker_count; ++i) {
         memset(&jobs[i], 0, sizeof(job));
         jobs[i].evaluation = 0;
 
-        worker_timings_array[i].idle_time = 0;
-        worker_timings_array[i].run_time = 0;
-        worker_timings_array[i].network_time = 0;
-        gettimeofday(&worker_timings_array[i].last_updated_at, NULL);
+        worker_stat_array[i].idle_time = 0;
+        worker_stat_array[i].run_time = 0;
+        worker_stat_array[i].network_time = 0;
+        worker_stat_array[i].sum_iterations = 0;
+        gettimeofday(&worker_stat_array[i].last_updated_at, NULL);
     }
 
     message.max_s = max_s = 0;
@@ -391,9 +403,10 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
         jobs[0].rearr_index[0] = message.rearr_index[0] = -1;
         set_worker_state(1, BUSY);
         //		send_work(1, &message);
-        MPI_Send(&message, sizeof(Message) / sizeof(int), MPI_INT, 1, TAG, MPI_COMM_WORLD);
+        MPI_Send(&message, message_size, MPI_INT, 1, TAG, MPI_COMM_WORLD);
     } else {
         load_queue(dump_filename);
+        int worker_id;
         while ((worker_id = get_worker_id_with_status(FINISHED)) != -1) {
             if ((msg = dequeue_message())) {
                 trace("%s Sending a piece of work to the Worker %d, pop from stack\n", node_name, worker_id);
@@ -427,40 +440,41 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
         memset(&message, 0, sizeof(Message));
 
         gettimeofday(&waiting_start, NULL);
-        dispatcher_timings.run_time += time_diff_ms(waiting_start, work_start); // От начала работы до начала ожидания
+        dispatcher_timings.run_time += time_diff_us(waiting_start, work_start); // От начала работы до начала ожидания
 
-        MPI_Recv(&message, sizeof(Message) / sizeof(int), MPI_INT, MPI_ANY_SOURCE, TAG, MPI_COMM_WORLD,
-                 &status);
+        MPI_Recv(&message, message_size, MPI_INT, MPI_ANY_SOURCE, TAG, MPI_COMM_WORLD, &status);
+        const int sender_id = status.MPI_SOURCE;
 
         gettimeofday(&work_start, NULL);
-        dispatcher_timings.idle_time += time_diff_ms(work_start, waiting_start);
+        dispatcher_timings.idle_time += time_diff_us(work_start, waiting_start);
 
         message.max_s = max_s = max(message.max_s, max_s);
-        copy_timings_from_message(&worker_timings_array[status.MPI_SOURCE - 1], &message);
+        copy_timings_from_message(&worker_stat_array[sender_id - 1], &message);
         switch (message.status) {
             case FORKED:
                 trace(
                     "%s Have a message from Worker %d, current_level = %d, eval = %f\n",
                     node_name,
-                    status.MPI_SOURCE,
+                    sender_id,
                     message.current_level,
                     message.evaluation
                 );
 
                 // Обновляем информацию о работе текущего процесса (он берет себе задачу поменьше)
-                copy_generators_from_message(&jobs[status.MPI_SOURCE - 1], &message);
-                jobs[status.MPI_SOURCE - 1].current_level = message.remaining_level;
-                jobs[status.MPI_SOURCE - 1].target_level = message.current_level;
-                jobs[status.MPI_SOURCE - 1].iterations = message.iterations;
-                worker_id = get_worker_id_with_status(FINISHED);
+                copy_generators_from_message(&jobs[sender_id - 1], &message);
+                jobs[sender_id - 1].current_level = message.remaining_level;
+                jobs[sender_id - 1].target_level = message.current_level;
+                worker_stat_array[sender_id - 1].sum_iterations = message.iterations - jobs[sender_id - 1].iterations;
+                jobs[sender_id - 1].iterations = message.iterations;
+                int worker_id = get_worker_id_with_status(FINISHED);
                 if (worker_id != -1) {
                     set_worker_state(worker_id, BUSY);
                     message.status = BUSY;
                     trace("%s Sending a piece of work to the Worker %d\n", node_name, worker_id);
-                    message.d_search_time = time_after_ms(worker_timings_array[worker_id - 1].last_updated_at);
+                    message.d_search_time = time_after_us(worker_stat_array[worker_id - 1].last_updated_at);
                     send_message_to_worker(worker_id, &message);
                 } else {
-                    trace("%s Push to stack\n", node_name);
+                    trace("%s Push to queue\n", node_name);
                     gettimeofday(&t1, NULL);
                     msg = (Message *) malloc(sizeof(Message));
                     if (msg == NULL) {
@@ -472,22 +486,22 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
                 }
                 break;
             case FINISHED:
-                trace("%s Have 'finished' message from %d\n", node_name, status.MPI_SOURCE);
+                trace("%s Have 'finished' message from Worker %d\n", node_name, sender_id);
+                worker_stat_array[sender_id - 1].sum_iterations += message.iterations - jobs[sender_id - 1].iterations;
                 if ((msg = dequeue_message())) {
-                    trace("%s Sending a piece of work to the Worker %d, pop from queue\n", node_name,
-                          status.MPI_SOURCE);
+                    trace("%s Sending a piece of work to the Worker %d, pop from queue\n", node_name, sender_id);
                     // Отправляем процессу новое задание в ответ на его же сообщение, которое пришло в момент work_start
-                    msg->d_search_time = time_after_ms(work_start);
-                    send_message_to_worker(status.MPI_SOURCE, msg);
+                    msg->d_search_time = time_after_us(work_start);
+                    send_message_to_worker(sender_id, msg);
                     free(msg);
                 } else {
-                    set_worker_state(status.MPI_SOURCE, FINISHED);
+                    set_worker_state(sender_id, FINISHED);
                     worker_id = get_worker_id_with_status(BUSY);
                     if (worker_id == -1) {
                         // All workers finished, kill them
                         message.status = QUIT;
                         for (worker_id = 1; worker_id < process_num; ++worker_id) {
-                            MPI_Send(&message, sizeof(Message) / sizeof(int), MPI_INT, worker_id, TAG, MPI_COMM_WORLD);
+                            MPI_Send(&message, message_size, MPI_INT, worker_id, TAG, MPI_COMM_WORLD);
                         }
                         print_timings(1);
                         return;

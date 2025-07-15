@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define TQ 1500 // Квант времени воркеров в микросекундах
-//#define TQ 100000000 // Квант времени воркеров в микросекундах
+#define TQ 1600 // Квант времени воркеров в микросекундах
+// #define TQ 100000000 // Квант времени воркеров в микросекундах
 #define TDUMP 20 // Время срабатывания будильника в диспетчере для автодампа состояния
 
 // #define trace(format, ...) printf (format, __VA_ARGS__)
@@ -31,7 +31,6 @@ typedef struct {
     int rearrangement;
     int rearr_index;
     int level_count;
-//    unsigned long int iterations;
 } Stat;
 
 extern Stat stat[n_step_limit + 1];

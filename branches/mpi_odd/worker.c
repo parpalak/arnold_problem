@@ -6,6 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/time.h>
+
+#include "lib.h"
 #include "messaging.h"
 
 static int max_s;
@@ -18,26 +20,25 @@ static void handle_alarm(int s) {
 
 static struct {
     // Worker's timings
-    unsigned long int w_run_time;
-    unsigned long int w_idle_time;
+    unsigned long int run_time;
+    unsigned long int idle_time;
 
     // Network's timings
     unsigned long int network_time;
 } timings;
 
 void send_message_to_dispatcher(Message *msg) {
-    struct timeval t1, t2;
+    struct timeval sending_start;
 
-    msg->w_idle_time = timings.w_idle_time;
-    msg->w_run_time = timings.w_run_time;
+    msg->w_idle_time = timings.idle_time;
+    msg->w_run_time = timings.run_time;
     msg->network_time = timings.network_time;
 
-    gettimeofday(&t1, NULL);
-    MPI_Send((void *) msg, sizeof(Message) / sizeof(int), MPI_INT, 0, TAG, MPI_COMM_WORLD);
-    gettimeofday(&t2, NULL);
+    gettimeofday(&sending_start, NULL);
+    MPI_Send(msg, sizeof(Message) / sizeof(int), MPI_INT, 0, TAG, MPI_COMM_WORLD);
 
-    const long int send_time = (t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_usec - t1.tv_usec) / 1000;
-    timings.w_idle_time += send_time;
+    const unsigned long int send_time = time_after_us(sending_start);
+    timings.idle_time += send_time;
     timings.network_time += send_time;
 }
 
@@ -315,10 +316,10 @@ void do_uncross_with_assoc(const unsigned int generator) {
     a[generator] = i;
 }
 
-void my_alarm(const unsigned long int microseconds) {
+void my_alarm(const long int microseconds) {
     struct itimerval timer;
-    timer.it_value.tv_sec = 0; // Первый сигнал через 0 секунд...
-    timer.it_value.tv_usec = microseconds; // ...и usec микросекунд
+    timer.it_value.tv_sec = microseconds / 1000000;
+    timer.it_value.tv_usec = microseconds % 1000000;
     timer.it_interval.tv_sec = 0; // Интервал повторения (0 = одноразовый)
     timer.it_interval.tv_usec = 0;
     setitimer(ITIMER_REAL, &timer, NULL);
@@ -338,7 +339,7 @@ void my_alarm(const unsigned long int microseconds) {
  *
  * @return  void
  */
-void run(int level, int min_level, unsigned long int iterations, const struct timeval start,
+unsigned long int run(int level, int min_level, unsigned long int iterations, const struct timeval start,
          const char *output_filename,
          const char *node_name,
          int full) {
@@ -545,6 +546,8 @@ void run(int level, int min_level, unsigned long int iterations, const struct ti
             }
         }
     }
+
+    return iterations;
 }
 
 void do_worker(
@@ -559,10 +562,10 @@ void do_worker(
     MPI_Status status;
     int i;
 
-    struct timeval t1, t2;
+    struct timeval work_start, waiting_start;
 
-    timings.w_run_time = 0;
-    timings.w_idle_time = 0;
+    timings.run_time = 0;
+    timings.idle_time = 0;
     timings.network_time = 0;
 
     // Timer initialization
@@ -580,18 +583,17 @@ void do_worker(
         load_queue(dump_filename);
     }
 
-    gettimeofday(&t2, NULL);
+    gettimeofday(&waiting_start, NULL);
 
     for (;;) {
         // receive from dispatcher:
         trace("%s Waiting for a message from the dispatcher\n", node_name);
         MPI_Recv(&message, sizeof(Message) / sizeof(int), MPI_INT, 0, TAG, MPI_COMM_WORLD, &status);
-        gettimeofday(&t1, NULL);
+        gettimeofday(&work_start, NULL);
 
-        const unsigned long int waiting_for_msg_time =
-                (t1.tv_sec - t2.tv_sec) * 1000 + (t1.tv_usec - t2.tv_usec) / 1000;
-        timings.w_idle_time += waiting_for_msg_time;
-        timings.network_time += (waiting_for_msg_time - message.d_search_time);
+        const unsigned long int waiting_for_msg_time = time_diff_us(work_start, waiting_start);
+        timings.idle_time += waiting_for_msg_time;
+        timings.network_time += waiting_for_msg_time - message.d_search_time;
 
         if (message.status == QUIT) {
             trace("%s Received 'quit' message\n", node_name);
@@ -631,11 +633,11 @@ void do_worker(
         );
 
         my_alarm(TQ);
-        run(message.current_level, message.target_level, message.iterations, start, output_filename, node_name, full);
+        message.iterations = run(message.current_level, message.target_level, message.iterations, start, output_filename, node_name, full);
 
-        gettimeofday(&t2, NULL);
-        const unsigned long int run_time = (t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_usec - t1.tv_usec) / 1000;
-        timings.w_run_time += run_time;
+        gettimeofday(&waiting_start, NULL);
+        timings.run_time += time_diff_us(waiting_start, work_start);
+
         message.status = FINISHED;
         trace("%s Finished\n", node_name);
 
