@@ -4,7 +4,7 @@
 
 #define TAG 0 // Для MPI
 
-enum { BUSY, FORKED, FINISHED, QUIT };
+enum { BUSY, FORKED, FINISHED, QUIT, HALT };
 
 typedef struct {
     int current_level; // Текущий уровень воркера

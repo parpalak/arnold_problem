@@ -1,5 +1,5 @@
 CC = mpicc
-CFLAGS = -O3
+CFLAGS = -Ofast -march=native -mtune=native -funroll-loops -fomit-frame-pointer
 LDFLAGS = -lm
 
 SRCS = lib.c logic.c dispatcher.c worker.c main.c

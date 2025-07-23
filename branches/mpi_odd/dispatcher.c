@@ -10,87 +10,6 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-// Глобальное состояние диспетчера
-static int max_s;
-
-// Задачи, которые ещё никому не отправлены
-Message **message_queue = NULL;
-int message_queue_reserved, message_queue_size;
-
-static struct {
-    // Dispatcher
-    unsigned long int enqueue_time;
-    unsigned long int enqueue_count;
-    unsigned long int run_time;
-    unsigned long int idle_time;
-} dispatcher_timings;
-
-int compare_counter;
-
-int compare_messages(const void *a, const void *b) {
-    compare_counter++;
-
-    Message *ma = *(Message **) a;
-    Message *mb = *(Message **) b;
-
-    //    return ma->evaluation - mb->evaluation;
-
-    int *p1 = ma->rearr_index;
-    int *p2 = mb->rearr_index;
-    // ReSharper disable once CppTooWideScopeInitStatement
-    const int *end_pointer = p1 + min(ma->current_level, mb->current_level);
-
-    for (; !(*p2 - *p1) && p1 <= end_pointer; ++p1, ++p2) {
-        // noop;
-    }
-
-    return *p2 - *p1;
-}
-
-void sort_message_queue() {
-    qsort(message_queue, message_queue_size, sizeof(Message *), compare_messages);
-}
-
-Message *dequeue_message() {
-    if (message_queue_size > 0) {
-        --message_queue_size;
-        // printf("------->  %d in queue <-------\n", message_queue_size);
-        // for (int i = 0; i < message_queue_size; ++i) {
-        //     printf("%f ", message_queue[i]->evaluation);
-        // }
-        // printf("\n");
-
-        return message_queue[message_queue_size];
-    }
-    return NULL;
-}
-
-void init_message_queue() {
-    message_queue_reserved = 1000;
-    message_queue_size = 0;
-    dispatcher_timings.enqueue_count = 0;
-    message_queue = (Message **) malloc(message_queue_reserved * sizeof(Message *));
-}
-
-void enqueue_message(Message *msg) {
-    ++dispatcher_timings.enqueue_count;
-    if (++message_queue_size > message_queue_reserved) {
-        Message **tmp = realloc(message_queue, (message_queue_reserved *= 2) * sizeof(Message *));
-        if (tmp != NULL) {
-            message_queue = tmp;
-        }
-    }
-    message_queue[message_queue_size - 1] = msg;
-    compare_counter = 0;
-    sort_message_queue();
-    //    printf("------->  %d in queue [%d times compared]  <-------\n", message_queue_size, compare_counter);
-    // for (int i = 0; i < message_queue_size; ++i) {
-    //     printf("%f ", message_queue[i]->evaluation);
-    // }
-    // printf("\n");
-}
-
-
 // Worker's state
 int *worker_statuses;
 int worker_count;
@@ -135,6 +54,100 @@ typedef struct {
 } worker_stat;
 
 worker_stat *worker_stat_array;
+
+// Глобальное состояние диспетчера
+static int max_s;
+
+// Задачи, которые ещё никому не отправлены
+Message **message_queue = NULL;
+int message_queue_reserved, message_queue_size;
+
+static struct {
+    // Dispatcher
+    unsigned long int enqueue_time;
+    unsigned long int enqueue_count;
+    unsigned long int run_time;
+    unsigned long int idle_time;
+} dispatcher_timings;
+
+int compare_messages(Message *ma, Message *mb) {
+#if GENERATOR_SORTING != SORTING_ORDER
+    // Сортировка на основе оценки
+    return ma->evaluation - mb->evaluation;
+#else
+    int *p1 = ma->rearr_index;
+    int *p2 = mb->rearr_index;
+    // ReSharper disable once CppTooWideScopeInitStatement
+    const int *end_pointer = p1 + min(ma->current_level, mb->current_level);
+
+    for (; !(*p2 - *p1) && p1 <= end_pointer; ++p1, ++p2) {
+        // noop;
+    }
+
+    return *p2 - *p1;
+#endif
+}
+
+Message *dequeue_message() {
+    if (message_queue_size > 0) {
+        return message_queue[--message_queue_size];
+    }
+    return NULL;
+}
+
+void init_message_queue() {
+    message_queue_reserved = 1000;
+    message_queue_size = 0;
+    dispatcher_timings.enqueue_count = 0;
+    message_queue = (Message **) malloc(message_queue_reserved * sizeof(Message *));
+}
+
+void enqueue_message(Message *message, const struct timeval start) {
+    ++dispatcher_timings.enqueue_count;
+    if (message_queue_size >= message_queue_reserved) {
+        // Удваиваем выделенную память под очередь задач
+        Message **tmp = realloc(message_queue, (message_queue_reserved *= 2) * sizeof(Message *));
+        if (tmp != NULL) {
+            message_queue = tmp;
+        }
+    }
+
+    unsigned int compare_counter = 0;
+    int i = message_queue_size - 1;
+
+    // Сдвигаем элементы больше message вправо
+    while (i >= 0 && compare_messages(message, message_queue[i]) < 0) {
+        message_queue[i + 1] = message_queue[i];
+        compare_counter++;
+        i--;
+    }
+
+    // Вставляем message на освободившееся место позицию
+    message_queue[i + 1] = message;
+
+    message_queue_size++;
+
+    if (dispatcher_timings.enqueue_count % (10000000 / TQ) == 0) {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        unsigned long int total_iterations = 0;
+        for (int i = 0; i < worker_count; ++i) {
+            total_iterations += worker_stat_array[i].sum_iterations;
+        }
+
+        printf(
+            "-------> util=%.1f speed=%f queue size %d push=%lu pop=%lu eval=%.2f...%.2f compared=%d\n",
+            100.0 * (double) dispatcher_timings.run_time / (double) (
+                dispatcher_timings.run_time + dispatcher_timings.idle_time),
+            (double) total_iterations / time_diff_us(now, start),
+            message_queue_size,
+            dispatcher_timings.enqueue_count,
+            dispatcher_timings.enqueue_count - message_queue_size,
+            message_queue[0]->evaluation, message_queue[message_queue_size - 1]->evaluation, compare_counter
+        );
+    }
+}
+
 
 void print_timings(const int to_stdout) {
     FILE *f;
@@ -207,7 +220,7 @@ void send_message_to_worker(const int worker_id, const Message *message) {
     jobs[worker_id - 1].iterations = message->iterations;
 }
 
-static void load_queue(const char *filename) {
+static void load_queue(const char *filename, const struct timeval start) {
     int i, res;
     Message *msg = NULL;
     char *str = malloc(65536), *ptr;
@@ -273,7 +286,7 @@ static void load_queue(const char *filename) {
                 }
                 msg->max_s = max_s;
                 msg->status = BUSY;
-                enqueue_message(msg);
+                enqueue_message(msg, start);
                 state = 2;
                 break;
         }
@@ -352,10 +365,16 @@ static void handle_alarm(int s) {
 }
 
 static void handle_interrupt(int s) {
+    printf(">>>>>>>>>>>>> Dispatcher: Received %d signal\n", s);
     print_timings(1);
 }
 
-void do_dispatcher(const int process_num, const char *dump_filename, const char *node_name) {
+void do_dispatcher(
+    const int process_num,
+    const char *dump_filename,
+    const char *node_name,
+    const struct timeval start
+) {
     Message message, *msg;
     const int message_size = sizeof(Message) / sizeof(int);
     MPI_Status status;
@@ -391,31 +410,47 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
     message.max_s = max_s = 0;
 
     if (!dump_filename[0]) {
-        // Sending first piece of work (root) to the first worker
-        message.current_level = 0;
-        message.target_level = 0;
-        message.evaluation = 0;
-        message.iterations = 0;
-        message.status = BUSY;
-        message.d_search_time = 0;
-        message.rearrangement[0] = 0;
-        message.level_count[0] = 0;
-        jobs[0].rearr_index[0] = message.rearr_index[0] = -1;
-        set_worker_state(1, BUSY);
-        //		send_work(1, &message);
-        MPI_Send(&message, message_size, MPI_INT, 1, TAG, MPI_COMM_WORLD);
+#if INITIALIZATION == INITIALIZATION_ROOT
+        // Эталон
+        msg = (Message *) malloc(sizeof(Message));
+        msg->current_level = 0;
+        msg->target_level = -1;
+        msg->evaluation = n * n;
+        msg->status = BUSY;
+        msg->iterations = 0;
+        msg->rearrangement[0] = 0;
+        msg->rearr_index[0] = -1;
+        msg->max_s = 0;
+        enqueue_message(msg, start);
+#elif  INITIALIZATION == INITIALIZATION_FIRST_LEVEL
+        for (int i = (n - 1) / 2; i--;) {
+            msg = (Message *) malloc(sizeof(Message));
+            msg->current_level = 1;
+            msg->target_level = 0;
+            msg->evaluation = n * n;
+            msg->status = BUSY;
+            msg->iterations = 0;
+            msg->rearrangement[0] = 0;
+            msg->rearr_index[0] = i;
+            msg->rearrangement[1] = 0;
+            msg->rearr_index[1] = -1;
+            msg->max_s = 0;
+            enqueue_message(msg, start);
+        }
+#endif
     } else {
-        load_queue(dump_filename);
-        int worker_id;
-        while ((worker_id = get_worker_id_with_status(FINISHED)) != -1) {
-            if ((msg = dequeue_message())) {
-                trace("%s Sending a piece of work to the Worker %d, pop from stack\n", node_name, worker_id);
-                send_message_to_worker(worker_id, msg);
-                free(msg);
-                set_worker_state(worker_id, BUSY);
-            } else {
-                break;
-            }
+        load_queue(dump_filename, start);
+    }
+
+    int worker_id;
+    while ((worker_id = get_worker_id_with_status(FINISHED)) != -1) {
+        if ((msg = dequeue_message())) {
+            trace("%s Sending a piece of work to the Worker %d, pop from stack\n", node_name, worker_id);
+            send_message_to_worker(worker_id, msg);
+            free(msg);
+            set_worker_state(worker_id, BUSY);
+        } else {
+            break;
         }
     }
 
@@ -433,7 +468,7 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
         if (alarm_fired) {
             alarm_fired = 0;
             alarm(TDUMP);
-            dump_queue();
+            //            dump_queue();
         }
 
         trace("%s Waiting for a message\n", node_name);
@@ -462,9 +497,15 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
 
                 // Обновляем информацию о работе текущего процесса (он берет себе задачу поменьше)
                 copy_generators_from_message(&jobs[sender_id - 1], &message);
+#if FORK_JOB == FORK_NEXT
+                // Отдаем будущую работу диспетчеру, а сами добьем с текущего места
                 jobs[sender_id - 1].current_level = message.remaining_level;
                 jobs[sender_id - 1].target_level = message.current_level;
-                worker_stat_array[sender_id - 1].sum_iterations = message.iterations - jobs[sender_id - 1].iterations;
+#elif FORK_JOB == FORK_CURRENT
+                // Отдаем диспетчеру текущую работу, а сами прыгамем к будущей
+                jobs[sender_id - 1].current_level = message.target_level;
+#endif
+                worker_stat_array[sender_id - 1].sum_iterations += message.iterations - jobs[sender_id - 1].iterations;
                 jobs[sender_id - 1].iterations = message.iterations;
                 int worker_id = get_worker_id_with_status(FINISHED);
                 if (worker_id != -1) {
@@ -481,7 +522,7 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
                         printf("Panic! Not enough memory!\n");
                     }
                     memcpy(msg, &message, sizeof(Message));
-                    enqueue_message(msg);
+                    enqueue_message(msg, start);
                     dispatcher_timings.enqueue_time += time_after_us(t1);
                 }
                 break;
@@ -496,8 +537,7 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
                     free(msg);
                 } else {
                     set_worker_state(sender_id, FINISHED);
-                    worker_id = get_worker_id_with_status(BUSY);
-                    if (worker_id == -1) {
+                    if (get_worker_id_with_status(BUSY) == -1) {
                         // All workers finished, kill them
                         message.status = QUIT;
                         for (worker_id = 1; worker_id < process_num; ++worker_id) {
@@ -508,6 +548,11 @@ void do_dispatcher(const int process_num, const char *dump_filename, const char 
                     }
                 }
                 break;
+            case HALT:
+                printf("%s Halt message received\n", node_name);
+                print_timings(1);
+                MPI_Abort(MPI_COMM_WORLD, 0);
+                return;
             default:
                 printf("%s Status error\n", node_name);
         }

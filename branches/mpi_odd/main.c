@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
 
     if (myid == 0) {
         strcpy(node_name, "Dispatcher:");
-        do_dispatcher(process_num, dump_filename, node_name);
+        do_dispatcher(process_num, dump_filename, node_name, start);
     } else {
         sprintf(node_name, "Worker %d:", myid);
         do_worker(myid, dump_filename, output_filename, node_name, start, full);
