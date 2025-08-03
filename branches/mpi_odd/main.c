@@ -1,49 +1,60 @@
-#include <sys/time.h> 
 #include <mpi.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <sys/time.h> 
 #include <signal.h>
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define min(a,b) ((a) < (b) ? (a) : (b))
 
-#define trace(format, ...) printf (format, __VA_ARGS__) 
-// #define trace(format, ...) 
+// #define trace(format, ...) printf (format, __VA_ARGS__)
+#define trace(format, ...)
 
 #define n1 43
 #define n_step1 (n1*(n1-1) / 2)
 
-#define plurality 3
-#define rearrangement_count 3
+#define plurality (n1-1)/2 // Количество узлов дерева на каждом уровне
+#define rearrangement_count 1 // Количество вариантов перестановок для обхода этих узлов
 
-#define TQ 5
-#define TDUMP 600
+#define TQ 1 // Квант времени воркеров
+#define TDUMP 20 // Квант времени воркеров
 #define TAG 0
 
-int n, k = 0, n_step;
+unsigned int n, n_step;
 
-int triplets[rearrangement_count][plurality]; //= {{1, 2, -1}, {2, -1, 1}, {-1, 2, 1}};
+int triplets[rearrangement_count][plurality]; //= {{-2, n-3, n-5, ... 2}};
+
+typedef int line_num;
 
 typedef struct {
-	int defects, generator, stack, processed;
+	line_num generator;
+	line_num prev_polygon_cnt;
+	int processed; // why?
 	int rearrangement;
 	int rearr_index;
-} Stats;
+    unsigned long int iterations;
+} Stat;
 
-Stats stats[n_step1 + 1];
+Stat stat[n_step1 + 1];
 
-int a[n1], d[n1 + 1];
+line_num a[n1]; // Текущая перестановка 
+line_num d[n1 + 1]; // Количество боковых вершин в текущих многоугольниках вокруг прямых
+
+unsigned int polygon_stat[100];
 
 int max_s;
 
-int b_free;
-int max_defects;
+unsigned int b_free; // Количество оставшихся генераторов для подбора (меняется???)
 
 // User input
 char filename[80] = "";
-int max_defects_default = 0;
 int full = 0;
 int show_stat = 0;
+
+struct timeval start;
 
 // MPI
 char NODE_NAME[64];
@@ -53,13 +64,14 @@ int get_timings = 0;
 enum {BUSY, FORKED, FINISHED, QUIT};
 
 typedef struct {
-	int level;
-	int min_level;
-	int w_level;
+	int level; // Текущий уровень
+	int min_level; // Уровень, до которого нужно подняться в этом джобе. Этот уровень ближе к корню, чем текущий уровень.
+	int w_level; // Что это?
 	int status;
 	int rearrangement[n_step1];
 	int rearr_index[n_step1];
 	int max_s;
+	unsigned long int iterations; // Количество предшествующих итераций главного цикла
 
 	int d_search_time; 
 	int w_run_time; 
@@ -85,7 +97,7 @@ struct {
 	int network_time; 
 } timings; 
 
-void msg_init() {
+void init_messages_stack() {
 	msg_reserve = 1000;
 	msg_count = 0;
 	timings.push_count = 0;
@@ -127,8 +139,9 @@ void push_msg_back(Message *msg) {
 }
 
 Message *pop_msg() {
-	if (msg_count)
+	if (msg_count) {
 		return messages[--msg_count];
+	}
 	return NULL;
 }
 
@@ -136,7 +149,7 @@ Message *pop_msg() {
 int* wrk_state;
 int wrk_count;
 
-void wrk_init(int cnt) {
+void init_worker_state(int cnt) {
 	int i;
 	wrk_count = cnt;
 	wrk_state = (int *) malloc(wrk_count * sizeof(int));
@@ -149,7 +162,7 @@ int get_worker(int status) {
 	int i;
 	for (i = 0; i < wrk_count; ++i) {
 		if (wrk_state[i] == status) {
-			return i+1;
+			return i + 1;
 		}
 	}
 	return -1;
@@ -184,132 +197,326 @@ void send_message_to_dispatcher(Message *msg) {
 	timings.network_time += send_time; 
 } 
 
-void count_gen (int level) {
-	int s, i, max_defects1;
+void count_gen (int level, unsigned long int iterations) {
+	struct timeval end;
+	int i;
 	FILE *f;
 
-	s = - 1 + (n & 1);
-	for (i = 1; i <= level + 1; i++) {
-		s -= (stats[i].generator & 1)*2 - 1;
-	}
-	if (s < 0)
-		s = -s;
-	if (s < max_s || !full && s == max_s)
-		return;
+	gettimeofday(&end, NULL);
+    double time_taken = end.tv_sec + end.tv_usec / 1e6 - start.tv_sec - start.tv_usec / 1e6; // in seconds
+
+    /**
+     * В конфигурации имеется level четных генераторов. Каждый четный генератор порождает
+     * белую область. С ним также ассоциированы два нечетных генератора, которые порождают
+     * две черные области. Но с генератором 0 ассоциирован только один черный генератор.
+     *
+     * Кроме того, есть (n-1)/2 начальных черных генераторов, которые порождают
+     * неучтенные черные области.
+     *
+     * Внешние области чередующегося цвета в количестве n + 1, которые пересекаются
+     * в начальном положении сканирующей прямой и которые тоже не учтены,
+     * вклада в разность не дают.
+     */
+
+	int s = n_step - 1 + (n - 1) / 2;
 
 	max_s = s;
-	max_defects1 = ((n*(n+1)/2 - k - 3) - 3*max_s)/2;
 
 	if (strcmp(filename, "") == 0) {
-		printf("%s A(%d, %d) = %d; %d %d)", NODE_NAME, n, k, s, max_defects, max_defects1);
-		for (i=1; i <= level+1; i++) {
-			printf(" %d", stats[i].generator);
-		}
-
-		printf("\n");
-
-		fflush(NULL);
-		fflush(NULL);
-		fflush(stdout);
-		fflush(stdout);
-	}
-	else {
+		f = stdout;
+        fprintf(f, "%s [%fs] A=%d", NODE_NAME, time_taken, s);
+	} else {
 		f = fopen(filename, "a");
+        fprintf(f, " [%fs] A=%d", time_taken, s);
+	}
 
-		fprintf(f, "A(%d, %d) = %d; %d %d)", n, k, s, max_defects, max_defects1);
-		for (i=1; i <= level+1; i++) {
-			fprintf(f, " %d", stats[i].generator);
-		}
+    fprintf(f, " i=%e)", (double)iterations);
 
-		fprintf(f, "\n");
+    for (i = n / 2; i--; ) {
+        fprintf(f, " %d", i * 2 + 1);
+    }
+
+    for (i=1; i <= level+1; i++) {
+        // Белый генератор
+        fprintf(f, " %d", (int)stat[i].generator);
+        // Ассоциированные черные генераторы
+        if (stat[i].generator == 0) {
+            fprintf(f, " 1");
+        }
+        else if (stat[i].generator % 2 == 0) {
+            fprintf(f, " %d %d", (int)stat[i].generator - 1, (int)stat[i].generator + 1);
+        }
+    }
+
+	fprintf(f, "\n");
+
+	if (strcmp(filename, "") == 0) {
+		fflush(NULL);
+		fflush(NULL);
+		fflush(stdout);
+		fflush(stdout);
+	} else {
 		fclose(f);
 	}
 }
 
-inline void set (int curr_generator, int t) {
-	int i;
+/**
+ * Пересекает прямые по генератору
+ *
+ * @param   int   generator       номер генератора
+ * @param   int   cross_direction 1 если косичка переплетается, 0 если распутывается
+ *
+ * @return  void
+ */
+void set(unsigned int generator, unsigned int cross_direction) {
+    line_num i;
 
-	b_free += -2*t+1;
-	i = a[curr_generator];
-	a[curr_generator] = a[curr_generator + 1];
-	a[curr_generator + 1] = i;
+    b_free += -2 * cross_direction + 1; // Корректируем кол-во оставшихся генераторов
+
+    i = a[generator];
+    a[generator] = a[generator + 1];
+    a[generator + 1] = i;
 }
 
-void run (int level, int min_level) {
-	int curr_generator, direct, i;
+/**
+ * Применение белого генератора и двух ассоциированных (соседних) черных.
+ */
+void do_cross_with_assoc(int level, unsigned int generator) {
+    line_num i;
+
+    stat[level + 1].prev_polygon_cnt = d[generator + 1];
+    polygon_stat[d[generator + 1]]++;
+
+    d[generator + 1] = 0;
+    d[generator + 3]++;
+
+    i = a[generator];
+    if (generator > 0) {
+        d[generator - 1]++;
+
+        a[generator] = a[generator - 1];
+        a[generator - 1] = a[generator + 1];
+    }
+    else {
+        a[generator] = a[generator + 1];
+    }
+    a[generator + 1] = a[generator + 2];
+    a[generator + 2] = i;
+}
+
+/**
+ * Отмена применения белого генератора и двух ассоциированных (соседних) черных.
+ */
+void do_uncross_with_assoc(int level, unsigned int generator) {
+    line_num i;
+
+    i = a[generator + 2];
+    a[generator + 2] = a[generator + 1];
+
+    if (generator > 0) {
+        d[generator - 1]--;
+
+        a[generator + 1] = a[generator - 1];
+        a[generator - 1] = a[generator];
+    }
+    else {
+        a[generator + 1] = a[generator];
+    }
+    a[generator] = i;
+
+    d[generator + 3]--;
+    d[generator + 1] = stat[level + 1].prev_polygon_cnt;
+    polygon_stat[d[generator + 1]]--;
+
+}
+
+/**
+ * Метод обеспечивает перебор генераторов. Если на вход установленые ненулевые уровни,
+ * метод ожидает установленных полей stat[].rearr_index и stat[].rearrangement
+ *
+ * @param   int level     Уровень, начиная с которого идет перебор
+ * @param   int min_level Уровень, до которого нужно подняться, не дальше от к корня, чем level
+ *
+ * @return  void
+ */
+void run (int level, int min_level, unsigned long int iterations) {
+	int curr_generator, i;
 	Message message;
 
-	max_defects = max_defects_default;
-
-	for (i = n + 1; i--; ) {
-		d[i] = 2;
+	for (int i = n + 1; i--; ) {
+		d[i] = i == 1 ? 0 : 1;
 	}
+
+    // Оптимизация 0. Первые генераторы должны образовать (n-1)/2 внешних черных двуугольников.
+    for (int i = n / 2; i--; ) {
+        set(i * 2 + 1, 1);
+    }
 
 	// Initializing
 	for (i = 0; i <= n_step; ++i) {
-		stats[i].processed = 0;
+		stat[i].processed = 0;
 	}
 
+    // Восстанавливаем генераторы на основе rearr_index, установленных перед запуском
 	for (i = 0; i < level; ++i) {
-		stats[i + 1].generator = curr_generator = stats[i].generator + triplets[stats[i].rearrangement][stats[i].rearr_index];
-		stats[i + 1].defects = stats[i].defects;
-		stats[i + 1].processed++;
-		if (!(curr_generator % 2)/* && (b_free*2 > n)*/) { // even, white
-			if (d[curr_generator] == 1) {
-				stats[i + 1].defects++;
-			}
-			if (d[curr_generator + 2] == 1) {
-				stats[i + 1].defects++;
-			}
-		}
-		stats[i+1].stack = d[curr_generator + 1];
-		d[curr_generator + 1] = 0;
-		d[curr_generator]++;
-		d[curr_generator + 2]++;
-		set(curr_generator, 1);
+		stat[i + 1].generator = curr_generator = stat[i].generator + triplets[stat[i].rearrangement][stat[i].rearr_index];
+		stat[i + 1].processed++;
+		stat[i + 1].prev_polygon_cnt = d[curr_generator + 1];
+//		d[curr_generator + 1] = 0;
+//		d[curr_generator]++;
+//		d[curr_generator + 2]++;
+		do_cross_with_assoc(i, curr_generator);
 	}
 
 	was_alarm = 0;
 
 	// Run
 	while (1) {
-		if (stats[level].rearr_index < plurality - 1) {
-			stats[level].rearr_index++;
-			curr_generator = stats[level].generator + (direct = triplets[stats[level].rearrangement][stats[level].rearr_index]);
-			if (curr_generator > n-2 || curr_generator < 0)
+        iterations++; // Раскомментировать при добавлении новых условий оптимизации для "профилировки".
+		// printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> it=%d  lev=%d ri=%d maxi=%d, cond=%d\n", iterations, level, stat[level].rearr_index, (n - 3)/2, stat[level].rearr_index < (int)(n - 3)/2);
+		if (stat[level].rearr_index < (int) (n - 3)/2) {
+			stat[level].rearr_index++;
+			curr_generator = stat[level].generator + triplets[stat[level].rearrangement][stat[level].rearr_index];
+			// printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> next, curr_generator = %d, %d\n", curr_generator, triplets[stat[level].rearrangement][stat[level].rearr_index]);
+
+
+			if (curr_generator > n-3 || curr_generator < 0)
 				continue;
 			if (a[curr_generator] > a[curr_generator + 1])
 				continue;
-			stats[level + 1].generator = curr_generator;
-			stats[level + 1].processed++;
 
-			if (!b_free) {
-				count_gen(level);
+
+
+            /**
+             * Оптимизации.
+             *
+             * 1. Генератор должен пересекать только прямые, которые еще не пересекались.
+             * Прямые пересекались, если левая прямая имеет больший номер, чем правая.
+             *
+             * 2. Последние генераторы должны образовать (n-1)/2 внешних черных двуугольников.
+             * Стороны двуугольников - прямые с убывающими номерами.
+             * Эта оптимизация - продолжение фиксации начальных генераторов. Применима только для черных генераторов.
+             * Например, прямые 0 и 1 могут пересекаться только последним генератором n - 2 в самом конце.
+             * В середине их нельзя пересекать. Тут проверяем хотя бы совпадение генератора и прямых.
+             * Можно проверить, что это именно последний генератор, но на практике это не дает заметного ускорения.
+             *
+             * 3. Черные генераторы исключаются из перебора.
+             * Сразу после применения любого белого генератора применяются два соседних черных генератора
+             * (для белого генератора 0 только один соседний правый генератор 1).
+             *
+             * 4. Генератор 0 применяется только один раз для первой и последней прямой.
+             * Он образует оставшийся внешний черный двуугольник, образованный прямыми 0 и n-1.
+             *
+             * 5. Если прямая n-1 начала идти справа налево, остальные прямые пересекать смысла нет.
+             * Соответствующие генераторы должны уменьшаться подряд и заканчиваться генератором 0.
+             * Остальные генераторы применять в этом интервале не нужно. Для отслеживания начала движения
+             * последней прямой используется a[n-2], а не a[n-1] в силу оптимизации 0.
+             */
+
+            // if (polygon_stat[12-4] > 0) {
+            //     continue;
+            // }
+            // if (polygon_stat[11-4] > 0) {
+            //     continue;
+            // }
+            // if (polygon_stat[10-4] > 0) {
+            //     continue;
+            // }
+            // if (polygon_stat[9-4] > 1) {
+            //     continue;
+            // }
+            // if (polygon_stat[8-4] > 2) {
+            //     continue;
+            // }
+            // if (polygon_stat[7-4] > 17) {
+            //     continue;
+            // }
+
+
+            if (curr_generator != 0) {
+                // Оптимизация 1 и 3.
+                // На самом деле если ее убрать, в перебор пойдут недопустимые наборы генераторов
+                if (a[curr_generator - 1] > a[curr_generator + 1]) {
+                    continue;
+                }
+
+                // Оптимизация 1 и 3.
+                // На самом деле если ее убрать, в перебор пойдут недопустимые наборы генераторов
+                if (a[curr_generator] > a[curr_generator + 2]) {
+                    continue;
+                }
+
+                // Оптимизация 2.
+                if (a[curr_generator] + 1 == a[curr_generator + 2] && curr_generator + 1 + a[curr_generator + 2] != n - 1) {
+                    continue;
+                }
+
+                // Оптимизация 1.
+                // Как показывает профилировка, после остальных оптимизаций эта не дает ускорения
+                // if (a[curr_generator] > a[curr_generator + 1]) {
+                //     continue;
+                // }
+
+                // Оптимизация 2.
+                if (a[curr_generator - 1] + 1 == a[curr_generator + 1] && curr_generator - 1 + a[curr_generator + 1] != n - 1) {
+                    continue;
+                }
+
+                // Оптимизация 2. Закомментировано, потому что профилировка показывает, что количество итераций слегка сокращается, а время выполнения увеличивается.
+                // if (a[curr_generator - 1] - 1 == a[curr_generator] && a[curr_generator] + curr_generator == n-1) {
+                //     continue;
+                // }
+                // if (a[curr_generator + 1] - 1 == a[curr_generator + 2] && a[curr_generator + 1] - 1 + curr_generator == n-1) {
+                //     continue;
+                // }
+            }
+            else {
+                // Оптимизация 4.
+                if (a[curr_generator + 1] != n - 1) {
+                    continue;
+                }
+                if (a[curr_generator] != 0) {
+                    continue;
+                }
+                // Здесь нет смысла проверять оптимизацию 2, так как прямая с номером 1 уже пересекла прямую n-1 и прямую 2.
+                // Поэтому a[2] != 1, и пересечение a[1] == 0 и a[2] всегда возможно.
+            }
+
+            // Оптимизация 5. Закомментирована, так как не дает прироста в эвристике -2, n-3, n-5...
+            // if (a[0] != n-1 && a[n-2] != n-1 && a[curr_generator + 1] != n-1) {
+            //     continue;
+            // }
+
+            // if (d[curr_generator + 1] + 4 > 8) {
+            //     continue;
+            // }
+
+            // Ограничение на поиск: максимальный генератор можно применить только два раза.
+            // Слишком сильное, долгий перебор, но может пригодится в каких-нибудь эвристиках.
+            // if (curr_generator == n - 3 && a[curr_generator + 1] != n-1 && a[curr_generator] != 0) {
+            //     continue;
+            // }
+
+
+			stat[level + 1].generator = curr_generator;
+			stat[level + 1].processed++;
+
+			if (n_step -1 == level) {
+				// printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> count_gen!!! >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n");
+				count_gen(level, iterations);
 				continue;
 			}
-			stats[level + 1].defects = stats[level].defects;
-			if (!(curr_generator % 2)/* && (b_free*2 > n)*/) { // even, white
-				if (d[curr_generator] == 1) {
-					stats[level + 1].defects++;
-				}
-				if (d[curr_generator + 2] == 1) {
-					stats[level + 1].defects++;
-				}
-				if (stats[level + 1].defects > max_defects) {
-					continue;
-				}
-				if (d[curr_generator + 1] < 3) // '<3' for 0 defects, '==1' for full search
-					continue;
 
-			}
-			stats[level + 1].stack = d[curr_generator + 1];
-			d[curr_generator + 1] = 0;
-			d[curr_generator]++;
-			d[curr_generator + 2]++;
-			set(curr_generator, 1);
+			// stat[level + 1].prev_polygon_cnt = d[curr_generator + 1];
+			// d[curr_generator + 1] = 0;
+			// d[curr_generator]++;
+			// d[curr_generator + 2]++;
+            // Применяем белый генератор curr_generator и ассоциированные соседние черные генераторы
+			// printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> down\n");
+			do_cross_with_assoc(level, curr_generator);
 			level++;
-			stats[level].rearrangement = direct > 0 ? 1 : 2;
-			stats[level].rearr_index = -1;
+			stat[level].rearrangement = 0;
+			stat[level].rearr_index = -1;
 
 			if (was_alarm) {
 				trace("%s Alarm\n", NODE_NAME);
@@ -317,39 +524,44 @@ void run (int level, int min_level) {
 				was_alarm = 0;
 				alarm(TQ);
 				for (i = min_level; i < n_step; ++i) {
-					if (stats[i + 1].processed > 1)
+					if (stat[i + 1].processed > 1)
 						break;
 				}
 
 				message.min_level = min_level; 
 				message.level = i; 
 				min_level = i; 
-				min_level = message.level = i; 
+				min_level = message.level = i; // remove?
 				message.w_level = level;
+				message.iterations = iterations;
 				message.status = FORKED;
 
 				trace("%s message.level = %d\n", NODE_NAME, message.level);
 				for (i = 0; i <= message.w_level; ++i) {
-					message.rearr_index[i] = stats[i].rearr_index;
-					message.rearrangement[i] = stats[i].rearrangement;
+					message.rearr_index[i] = stat[i].rearr_index;
+					message.rearrangement[i] = stat[i].rearrangement;
 				}
 				message.max_s = max_s;
 
 				send_message_to_dispatcher(&message);
 
 				for (i = 0; i <= n_step; ++i)
-					stats[i].processed = 1;
+					stat[i].processed = 1;
 			}
 		}
 		else {
-			curr_generator = stats[level].generator;
+			// printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> up\n");
+			
+			curr_generator = stat[level].generator;
+            stat[level].iterations = 0; // ???
 			level--;
-			set(curr_generator, 0);
-			d[curr_generator]--;
-			d[curr_generator + 2]--;
-			d[curr_generator + 1] = stats[level + 1].stack;
-			if (level == min_level)
+			do_uncross_with_assoc(level, curr_generator);
+			// d[curr_generator]--;
+			// d[curr_generator + 2]--;
+			// d[curr_generator + 1] = stat[level + 1].prev_polygon_cnt;
+			if (level == min_level) {
 				break;
+			}
 		}
 	}
 }
@@ -357,7 +569,8 @@ void run (int level, int min_level) {
 typedef struct { 
 	int rearrangement[n_step1]; 
 	int rearr_index[n_step1]; 
-	int min_level, level; 
+	int min_level, level;
+	unsigned long int iterations; 
 	int w_idle_time, w_run_time, network_time; 
 	struct timeval t; 
 } worker_info; 
@@ -386,8 +599,8 @@ void print_timings() {
 } 
 
 void copy_timings_from_message(worker_info *inf, const Message *msg) { 
-	inf->w_idle_time = msg->w_idle_time; 
-	inf->w_run_time = msg->w_run_time; 
+	inf->w_idle_time  = msg->w_idle_time; 
+	inf->w_run_time   = msg->w_run_time; 
 	inf->network_time = msg->network_time; 
 	gettimeofday(&inf->t, NULL); 
 } 
@@ -403,16 +616,16 @@ void dump_queue() {
 	FILE *f; 
 	v = !v; 
 
-	sprintf(filename, "%d_%d_dump_gens_%d", n, k, v);
+	sprintf(filename, "%d_dump_gens_%d", n, v);
 	f = fopen(filename, "w+"); 
-	fprintf(f, "// n, k\n%d %d\n", n, k);
-	fprintf(f, "// max_s\n"); 
-	fprintf(f, "%d\n", max_s); 
+	fprintf(f, "// n\n%d\n", n);
+	fprintf(f, "// max_s\n");
+	fprintf(f, "%d\n", max_s);
 
-	fprintf(f, "// min_lev, lev, rearrangement, rearr_index ...\n"); 
+	fprintf(f, "// min_lev, lev, iterations, rearrangement, rearr_index ...\n"); 
 	for (i = 0; i < wrk_count; ++i) { 
 		if (wrk_state[i] == BUSY) { 
-			fprintf(f, "%d %d\n", workers_info[i].min_level, workers_info[i].level); 
+			fprintf(f, "%d %d %lu\n", workers_info[i].min_level, workers_info[i].level, workers_info[i].iterations); 
 			for (j = 0; j <= workers_info[i].level; ++j) 
 				fprintf(f, "%d ", workers_info[i].rearrangement[j]); 
 			fprintf(f, "\n"); 
@@ -422,7 +635,7 @@ void dump_queue() {
 		} 
 	} 
 	for (i = 0; i < msg_count; ++i) { 
-		fprintf(f, "%d %d\n", messages[i]->min_level, messages[i]->level); 
+		fprintf(f, "%d %d %lu\n", messages[i]->min_level, messages[i]->level, messages[i]->iterations); 
 		for (j = 0; j <= messages[i]->level; ++j) 
 			fprintf(f, "%d ", messages[i]->rearrangement[j]); 
 		fprintf(f, "\n"); 
@@ -434,7 +647,7 @@ void dump_queue() {
 	fclose(f); 
 } 
 
-void load_queue(const char *filename, int is_it_dispatcher) { 
+void load_queue(const char *filename, int is_dispatcher) { 
 	FILE *f; 
 	int l, i, res; 
 	Message *msg; 
@@ -447,46 +660,48 @@ void load_queue(const char *filename, int is_it_dispatcher) {
 		exit(0); 
 	} 
 	while(res = fscanf(f, "%[^\n]\n", str), res != -1 && res != 0) { 
-		if (str[0] == '/') 
+		if (str[0] == '/') {
 			continue; 
+		}
 		switch (l) { 
-		case 0: 
-			ptr = str;
-			n = strtol(ptr, &ptr, 10); 
-			k = strtol(ptr, &ptr, 10); 
-			if (!is_it_dispatcher) 
-				return; 
-			l = 1; 
-			break; 
-		case 1: 
-			ptr = str; 
-			max_s = strtol(ptr, &ptr, 10); 
-			l = 2; 
-			break; 
-		case 2: 
-			msg = (Message *) malloc(sizeof(Message)); 
-			sscanf(str, "%d %d", &msg->min_level, &msg->level); 
-			l = 3; 
-			break; 
-		case 3: 
-			ptr = str; 
-			for (i = 0; i <= msg->level; i++ ) { 
-				msg->rearrangement[i] = strtol(ptr, &ptr, 10); 
-			} 
-			l = 4; 
-			break; 
-		case 4: 
-			ptr = str; 
-			for (i = 0; i <= msg->level; i++ ) { 
-				msg->rearr_index[i] = strtol(ptr, &ptr, 10); 
-			} 
-			msg->max_s = max_s;
-			msg->status = BUSY; 
-			push_msg_back(msg); 
-			l = 2; 
-			break; 
+			case 0: 
+				ptr = str;
+				n = strtol(ptr, &ptr, 10); 
+				if (!is_dispatcher) {
+					goto load_queue_exit;
+				}
+				l = 2; 
+				break; 
+			case 1:
+			 	ptr = str;
+		    	max_s = strtol(ptr, &ptr, 10);
+			 	l = 2;
+			 	break;
+			case 2: 
+				msg = (Message *) malloc(sizeof(Message)); 
+				sscanf(str, "%d %d %lu", &msg->min_level, &msg->level, &msg->iterations); 
+				l = 3; 
+				break; 
+			case 3: 
+				ptr = str; 
+				for (i = 0; i <= msg->level; i++ ) { 
+					msg->rearrangement[i] = strtol(ptr, &ptr, 10); 
+				} 
+				l = 4; 
+				break; 
+			case 4: 
+				ptr = str; 
+				for (i = 0; i <= msg->level; i++ ) { 
+					msg->rearr_index[i] = strtol(ptr, &ptr, 10); 
+				} 
+			    msg->max_s = max_s;
+				msg->status = BUSY; 
+				push_msg_back(msg); 
+				l = 2; 
+				break; 
 		} 
 	} 
+load_queue_exit:
 	fclose(f); 
 	free(str); 
 } 
@@ -496,7 +711,8 @@ void send_work(int node, Message *msg) {
 
 	copy_gens_from_message(&workers_info[node-1], msg); 
 	workers_info[node-1].level = msg->level; 
-	workers_info[node-1].min_level = msg->min_level; 
+	workers_info[node-1].min_level = msg->min_level;
+	workers_info[node-1].iterations = msg->iterations;
 }
 
 void do_dispatcher(int numprocs, const char *dump_filename) {
@@ -514,11 +730,8 @@ void do_dispatcher(int numprocs, const char *dump_filename) {
 
 	printf("%s We have %d processes\n", NODE_NAME, numprocs);
 
-	// Message stack initializing
-	msg_init();
-
-	// Workers state initializing
-	wrk_init(numprocs-1);
+	init_messages_stack();
+	init_worker_state(numprocs - 1);
 
 	workers_info = (worker_info *) malloc((wrk_count)*sizeof(worker_info)); 
 
@@ -533,6 +746,7 @@ void do_dispatcher(int numprocs, const char *dump_filename) {
 		// Sending first peace of work (root) to the first worker 
 		message.level = 0; 
 		message.min_level = 0; 
+		message.iterations = 0; 
 		message.status = BUSY; 
 		message.rearrangement[0] = 0; 
 		workers_info[0].rearr_index[0] = message.rearr_index[0] = -1; 
@@ -546,7 +760,9 @@ void do_dispatcher(int numprocs, const char *dump_filename) {
 				send_work(worker, msg); 
 				free(msg); 
 				set_wrk_state(worker, BUSY); 
-			} else break; 
+			} else {
+				break; 
+			} 
 		} 
 	} 
 
@@ -584,7 +800,7 @@ void do_dispatcher(int numprocs, const char *dump_filename) {
 		gettimeofday(&t3, NULL); 
 
 		idle_time =  (t3.tv_sec - t4.tv_sec)*1000 + (t3.tv_usec - t4.tv_usec)/1000; 
-		timings.d_idle_time += idle_time; 
+		timings.d_idle_time += idle_time;
 		message.max_s = max_s = max(message.max_s, max_s);
 		copy_timings_from_message(&workers_info[status.MPI_SOURCE-1], &message); 
 		switch (message.status) {
@@ -594,6 +810,7 @@ void do_dispatcher(int numprocs, const char *dump_filename) {
 				copy_gens_from_message(&workers_info[status.MPI_SOURCE-1], &message); 
 				workers_info[status.MPI_SOURCE-1].level = message.w_level; 
 				workers_info[status.MPI_SOURCE-1].min_level = message.level;
+				workers_info[status.MPI_SOURCE-1].iterations = message.iterations;
 				worker = get_worker(FINISHED);
 				if (worker != -1) {
 					set_wrk_state(worker, BUSY);
@@ -660,22 +877,13 @@ void do_worker(int id, const char *dump_filename) {
 	signal(SIGALRM, tmr);
 	signal(SIGUSR1, send_timings_signal);
 
-	for (i = 3; i < plurality; i++ ) {
-		triplets[0][i] = triplets[1][i] = triplets[2][i] = i;
+	for (i = 1; i <= (n-3)/2; i++ ) {
+		triplets[0][i] = n-1 - 2*i;
 	}
 
-	triplets[0][0] = 1;
-	triplets[0][1] = 2;
-	triplets[0][2] = -1;
-	triplets[1][0] = 2;
-	triplets[1][1] = -1;
-	triplets[1][2] = 1;
-	triplets[2][0] = -1;
-	triplets[2][1] = 2;
-	triplets[2][2] = 1;
+	triplets[0][0] = -2;
 
-	stats[0].generator = 0;
-	stats[0].defects = 0;
+	stat[0].generator = 0;
 
 	if (dump_filename[0]) { 
 		load_queue(dump_filename, 0); 
@@ -702,30 +910,28 @@ void do_worker(int id, const char *dump_filename) {
 		max_s = message.max_s;
 
 		for (i = 0; i <= message.level; ++i) {
-			stats[i].rearrangement = message.rearrangement[i];
-			stats[i].rearr_index = message.rearr_index[i];
+			stat[i].rearrangement = message.rearrangement[i];
+			stat[i].rearr_index = message.rearr_index[i];
 		}
 
-		b_free = (max_defects = n_step = n*(n-1) / 2) - 1;
+		b_free = (n*(n-1) / 2) - 1; // почему -1?
+		n_step = (n * (n - 2) + 3) / 6;
 		for (i = 0; i < n; i++) {
 			a[i] = i;
 		}
 
-		for (i = k; i--; ) {
-			set(2*i, 1);
-		}
-
-		trace("%s Run, level = %d, minlevel = %d\n", NODE_NAME, message.level, message.min_level);
+		trace("%s Run, level = %d, minlevel = %d, iterations = %lu\n", NODE_NAME, message.level, message.min_level, message.iterations);
 
 		alarm(TQ);
-		run(message.level, message.min_level);
+		run(message.level, message.min_level, message.iterations);
 		gettimeofday(&t2, NULL); 
 		run_time =  (t2.tv_sec - t1.tv_sec)*1000 + (t2.tv_usec - t1.tv_usec)/1000; 
 		timings.w_run_time += run_time; 
 		message.status = FINISHED;
 		trace("%s Finished\n", NODE_NAME); 
 
-		send_message_to_dispatcher(&message);	}
+		send_message_to_dispatcher(&message);
+	}
 }
 
 int main(int argc, char **argv) {
@@ -737,10 +943,8 @@ int main(int argc, char **argv) {
 
 	if (argc < 2) {
 		printf(
-			"Usage: %s -n N [-k K] [-max-def D] [-o filename] [-full] [-d dump_filename]\n"
+			"Usage: %s -n N [-o filename] [-full] [-d dump_filename]\n"
 			"-n             line count;\n"
-			"-k             0 by default;\n"
-			"-max-def       the number of allowed defects;\n"
 			"-full          output all found generator sets;\n"
 			"-d             dump file name\n"
 			"-o             output file.\n", argv[0]);
@@ -753,10 +957,6 @@ int main(int argc, char **argv) {
 		strcpy(s, argv[i]);
 		if (!strcmp("-n", s))
 			sscanf(argv[++i], "%d", &n);
-		else if (!strcmp("-k", s))
-			sscanf(argv[++i], "%d", &k);
-		else if (!strcmp("-max-def", s))
-			sscanf(argv[++i], "%d", &max_defects_default);
 		else if (!strcmp("-o", s))
 			strcpy(filename, argv[++i]);
 		else if (!strcmp("-full", s))
@@ -765,10 +965,8 @@ int main(int argc, char **argv) {
 			strcpy(dump_filename, argv[++i]);
 		else {
 			printf(
-				"Usage: %s -n N [-k K] [-max-def D] [-o filename] [-full] [-d dump_filename]\n"
+				"Usage: %s -n N [-o filename] [-full] [-d dump_filename]\n"
 				"-n             line count;\n"
-				"-k             0 by default;\n"
-				"-max-def       the number of allowed defects;\n"
 				"-full          output all found generator sets;\n"
 				"-d             dump file name\n"
 				"-o             output file.\n", argv[0]);
@@ -776,11 +974,25 @@ int main(int argc, char **argv) {
 		}
 	}
 
+    if (n % 2 == 0) {
+        printf("This program is designed for fast search of odd defectless configurations only.\n");
+
+        return 0;
+    }
+
+    if (n > n1) {
+        printf("This program is compiled to support up to %d lines, %d given.\n", n1, n);
+
+        return 0;
+    }
+
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD,&numprocs);
 	MPI_Comm_rank(MPI_COMM_WORLD,&myid);
 
-	if(myid == 0) {
+    gettimeofday(&start, NULL);
+
+	if (myid == 0) {
 		strcpy(NODE_NAME, "Dispatcher:");
 		do_dispatcher(numprocs, dump_filename);
 	}
@@ -788,8 +1000,14 @@ int main(int argc, char **argv) {
 		sprintf(NODE_NAME, "Worker %d:", myid);
 		do_worker(myid, dump_filename);
 	}
+    struct timeval end;
 
-	printf("---------->>>%s terminated.\n", NODE_NAME);
+    gettimeofday(&end, NULL);
+    double time_taken = end.tv_sec + end.tv_usec / 1e6 -
+        start.tv_sec - start.tv_usec / 1e6; // in seconds
+
+	printf("---------->>> [%fs] %s terminated.\n", time_taken, NODE_NAME);
 	MPI_Finalize();
+	
 	return 0;
 }
