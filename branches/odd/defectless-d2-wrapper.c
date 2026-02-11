@@ -1,8 +1,13 @@
 /**
  * Программа осуществляет обход дерева для поиска бездефектных конфигураций.
+ * Перебор идет только по зеркально-симметричным конфигурациям.
  *
- * Вариант ищет зеркально-симметричные конфигурации.
- * Поиск идет от середины к краям.
+ * Цель этой модификации - найти обертки. Если запустить с параметром "-w 3",
+ * перебор пойдет по всем симметричным конфигурациям. Если с большим значением,
+ * то начальные генераторы в середине будут образовывать дефолтную конфигурацию,
+ * а перебор пойдет по бездефектным оберткам.
+ *
+ * Поиск идет от середины к краям
  */
 
 #include <stdio.h>
@@ -20,6 +25,8 @@
 int n;
 
 int level = 0;
+
+int wrapping = 3;
 
 typedef struct {
     int generator;
@@ -52,14 +59,14 @@ void handle_signal(int sig) {
         start.tv_sec - start.tv_usec / 1e6; // in seconds
 
     printf("\n [%f] level = %d/%d", time_taken, level, b_free);
-    printf("\n");
-    for (int i = 0; i < level; i++) {
-        if (stat[i].generator % 2) {
-            continue;
-        }
-        printf("%.*s", stat[i].generator, "                                              ");
-        printf(" %d \n", stat[i].generator);
-    }
+//    printf("\n");
+//    for (int i = 0; i < level; i++) {
+//        if (stat[i].generator % 2) {
+//            continue;
+//        }
+//        printf("%.*s", stat[i].generator, "                                              ");
+//        printf(" %d \n", stat[i].generator);
+//    }
 
     printf("\n");
 
@@ -120,14 +127,25 @@ void count_gen(int level, unsigned long int iterations) {
     // dump_rearrangement();
 
     if (strcmp(filename, "") == 0) {
-        printf(" %f A=%d i=%u)", time_taken, s, iterations);
+        printf(" %f A=%d i=%lu)", time_taken, s, iterations);
 
         for (i = level; i--; ) {
             printf(" %d", stat[i].generator);
         }
 
-        printf(" 1 0 1");
-        for (int i = 3; i < n; i += 2) {
+        printf("  ");
+
+        for (int i = wrapping - 2; i > 0; i--) {
+            for (int j = i; j <= wrapping - 2; j++) {
+                printf(" %d", j);
+            }
+        }
+        for (int j = 0; j <= wrapping - 2; j++) {
+            printf(" %d", j);
+        }
+        printf("  ");
+
+        for (int i = wrapping; i < n; i += 2) {
             printf(" %d", i);
         }
 
@@ -318,17 +336,34 @@ void calc() {
     max_s = 0;
 
     // Инициализируем генераторы по центру
-    set(0, 1);
 
-    set(1, 1); // черный генератор, ассоциированный с предыдущим белым
-    set2(1, 1); // черный генератор, ассоциированный с предыдущим белым
+    for (int i = wrapping - 2; i > 0; i--) {
+        for (int j = i; j <= wrapping - 2; j++) {
+            set2(j, 1);
+        }
+    }
 
-    for (int i = 3; i < n; i += 2) {
+    for (int j = 0; j <= wrapping - 2; j++) {
+        set(j, 1);
+    }
+
+    for (int i = wrapping; i < n; i += 2) {
         set(i, 1);
     }
 
-    start_level = level;
+    int s3 = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = i+1; j < n; j++) {
+            if (b[i][j] == 0) {
+                s3++;
+            }
+        }
+    }
 
+    b_free = s3/2;
+
+
+    start_level = level;
     stat[level].generator = init_working_gen(2);
     stat[level].prev_generator = 0;
 
@@ -393,7 +428,7 @@ void calc() {
         else {
         up:
             if (level <= start_level) {
-                printf("level <= start_level %u\n", iterations);
+                printf("level <= start_level %lu\n", iterations);
                 break;
             }
 
@@ -416,7 +451,7 @@ int main(int argc, char** argv) {
     char s[80];
 
     if (argc <= 1) {
-        printf("Usage: %s -n N [-o filename]\n  -n\n	 line count;\n  -o\n	 output file.\n", argv[0]);
+        printf("Usage: %s -n N [-o filename]\n  -n\n	 line count;\n  -w\n	 wrapping count;\n  -o\n	 output file.\n", argv[0]);
 
         return 0;
     }
@@ -427,6 +462,8 @@ int main(int argc, char** argv) {
         strcpy(s, argv[i]);
         if (0 == strcmp("-n", s))
             sscanf(argv[++i], "%d", &n);
+        else if (0 == strcmp("-w", s))
+            sscanf(argv[++i], "%d", &wrapping);
         else if (0 == strcmp("-o", s))
             strcpy(filename, argv[++i]);
         else if (0 == strcmp("-full", s))
